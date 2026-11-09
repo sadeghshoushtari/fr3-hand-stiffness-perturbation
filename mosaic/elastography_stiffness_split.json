@@ -1,0 +1,74 @@
+{
+  "ESP32": {
+    "Type": "UDPClient",
+    "Params": [
+      50500,
+      "double"
+    ],
+    "DesiredRate": 5,
+    "Path": "C:\\Users\\Sadegh\\Desktop\\mosaic_logs\\"
+  },
+  "PhaseFeatures": {
+    "Type": "Projector",
+    "Inputs": [
+      "ESP32"
+    ],
+    "Params": [
+      "8;9;10;11"
+    ]
+  },
+  "Calibration": {
+    "Type": "Trigger",
+    "Params": [
+      "relaxed:0;0",
+      "biceps_0.2kg:0.17;0",
+      "biceps_0.4kg:0.33;0",
+      "biceps_1.2kg:1.0;0",
+      "triceps_light:0;0.33",
+      "triceps_medium:0;0.67",
+      "triceps_max:0;1.0",
+      "cocontract_light:0.33;0.33",
+      "cocontract_medium:0.67;0.67",
+      "cocontract_max:1.0;1.0"
+    ]
+  },
+  "MuscleModel": {
+    "Type": "IncrementalPredictor",
+    "DesiredRate": 5,
+    "Inputs": [
+      "PhaseFeatures",
+      "Calibration"
+    ],
+    "Params": [
+      "Ridge",
+      4,
+      2,
+      0.1
+    ],
+    "Path": "C:\\Users\\Sadegh\\Desktop\\mosaic_logs\\"
+  },
+  "Command": {
+    "Type": "Function",
+    "Inputs": [
+      "MuscleModel"
+    ],
+    "Params": [
+      "clip",
+      0.0,
+      1.0
+    ]
+  },
+  "ToRobot": {
+    "Type": "UDPClient",
+    "Inputs": [
+      "Command"
+    ],
+    "Params": [
+      50511,
+      "double",
+      "127.0.0.1",
+      50510
+    ],
+    "Path": "C:\\Users\\Sadegh\\Desktop\\mosaic_logs\\"
+  }
+}

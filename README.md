@@ -55,6 +55,7 @@ stiffness of 300-1500 N/m the handle moves 6-11.5 mm of each 15 mm step and the 
 | `laptop_sensor_logger.py` | another computer | Same, for a board on Wi-Fi when it cannot reach the robot PC. Also measures the clock offset to internet time. |
 | `analyze_perturbation.py` | anywhere | Stiffness per trial from the robot log, matched with the sensor log. Needs numpy and scipy. |
 | `stiffness_identification.py` | anywhere | The two stiffness fits used by the analysis. |
+| `mosaic/*.json` | MOSAIC | Online pipelines from sensor features to the stiffness command (see below). |
 
 ## Build
 
@@ -118,6 +119,27 @@ trial it prints and writes to `summary.csv`: the 3x3 stiffness from both estimat
 det(K)^(1/3), and the mean phase, phase scatter and amplitudes of both sensor pairs within the trial (3 s cut from both
 ends). Both logs come from the same PC clock, so no time correction is needed. For a sensor log recorded on another
 computer with `laptop_sensor_logger.py`, the clock offsets are taken from its `clock.json` and `--robot-clock-offset`.
+
+## MOSAIC pipelines (online stiffness command)
+
+`mosaic/` holds the two pipeline configurations for MOSAIC, the block-based real-time framework used in the lab
+(not included here). They turn the sensor features into a 0..1 stiffness command for the teleoperation:
+
+    ESP32 (UDPClient, port 50500) -> PhaseFeatures (values 8-11: cos/sin of both pair phases)
+      -> MuscleModel (IncrementalPredictor, ridge regression, trained online from Calibration)
+      -> Command (clip to 0..1) -> ToRobot (UDP to 127.0.0.1:50510)
+
+| File | Output |
+|---|---|
+| `elastography_stiffness.json` | `[biceps, triceps, u]`, u = (biceps + triceps) / 2 is the co-contraction level (tele-impedance) |
+| `elastography_stiffness_split.json` | `[biceps, triceps]` (biceps -> translational, triceps -> rotational stiffness) |
+
+Calibration is done with the `Calibration` trigger block: the operator holds each state (relaxed, a biceps load of
+0.2 / 0.4 / 1.2 kg, triceps light / medium / max, co-contraction light / medium / max) while its target is active, in
+two rounds; the model is fitted to those samples. The robot side maps the 0..1 values to N/m and Nm/rad within its
+own limits. The `Path` entries are log folders on the computer where the pipeline was built; change them to a local
+folder. The pipelines read the board over Wi-Fi (UDP); on a PC where the board is connected by USB, the `ESP32` block
+has to be replaced by a serial input.
 
 ## Status
 
