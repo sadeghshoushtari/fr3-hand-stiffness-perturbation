@@ -5,7 +5,11 @@
 For every trial (trials.csv) the steps are cut from robot.csv (step onset = first ramp-up sample), dx_d and dx are
 taken as hold-window mean minus pre-window mean, and two 3x3 estimates are fitted:
   spring : K_h dx = K_r (dx_d - dx), from positions and the commanded K_r only
-  wrench : K = -dF/dx from O_F_ext_hat_K; a trial labelled "empty" (nobody holding) is subtracted per direction
+  wrench : K = -dF/dx, F = -O_F_ext_hat_K (force of the hand on the robot); a trial labelled "empty" (nobody
+           holding) is subtracted per direction
+Rotation trials (kind "rotation", labels rot_...) give the rotational 3x3 stiffness in Nm/rad the same way, with the
+handle's rotation vector (base frame, relative to the start of the trial) for dx and the moments for F; "rot_empty"
+is their empty trial. Their columns are named r.._spring / r.._wrench instead of k.._spring / k.._wrench.
 The sensor packets of the trial give the mean phase and amplitudes of both pairs: from sensors.csv (same clock as the
 robot), or with --sensors from the laptop log, matched by Unix time (each side corrected by its measured offset to
 internet time: clock.json next to the laptop log, --robot-clock-offset for the lab PC) and trimmed by --trim s at
@@ -52,14 +56,36 @@ def window(t, y, t0, t1):
     return y[sel].mean(axis=0)
 
 
-def trial_steps(robot, trial, hold_s):
+def rotation_vectors(q, q_ref):
+    """Rotation vector (base frame) of q * q_ref^-1 for quaternions (w, x, y, z) in rows."""
+    w0, v0 = q_ref[0], -q_ref[1:]  # conjugate of the reference
+    w, v = q[:, 0], q[:, 1:]
+    rw = w * w0 - v @ v0
+    rv = w[:, None] * v0 + w0 * v + np.cross(v, v0)
+    rv[rw < 0] *= -1.0
+    rw = np.abs(rw)
+    n = np.linalg.norm(rv, axis=1)
+    angle = 2.0 * np.arctan2(n, rw)
+    scale = np.where(n > 1e-12, angle / np.maximum(n, 1e-12), 2.0)
+    return rv * scale[:, None]
+
+
+def trial_steps(robot, trial, hold_s, rotation=False):
     sel = robot["trial"] == trial
     t = robot["t_s"][sel]
     phase = robot["phase"][sel]
     step = robot["step"][sel]
-    xd = np.column_stack([robot[c][sel] for c in ("xd", "yd", "zd")])
-    x = np.column_stack([robot[c][sel] for c in ("x", "y", "z")])
-    f = np.column_stack([robot[c][sel] for c in ("fx", "fy", "fz")])
+    # On the FR3, O_F_ext_hat_K is the force the robot applies to the hand (first lab run 11-12: all fits came out
+    # negative, including the empty trial), so it is negated to get the force of the hand on the robot.
+    if rotation:
+        xd = np.column_stack([robot[c][sel] for c in ("rdx", "rdy", "rdz")])
+        q = np.column_stack([robot[c][sel] for c in ("qw", "qx", "qy", "qz")])
+        x = rotation_vectors(q, q[0]) if q.size else np.empty((0, 3))
+        f = -np.column_stack([robot[c][sel] for c in ("mx", "my", "mz")])
+    else:
+        xd = np.column_stack([robot[c][sel] for c in ("xd", "yd", "zd")])
+        x = np.column_stack([robot[c][sel] for c in ("x", "y", "z")])
+        f = -np.column_stack([robot[c][sel] for c in ("fx", "fy", "fz")])
     axis = robot["axis"][sel]
     sign = robot["sign"][sel]
     out = []
@@ -125,10 +151,19 @@ def main():
     with open(args.log_dir / "trials.csv") as f:
         trials = list(csv.DictReader(f))
 
-    steps = {int(tr["trial"]): trial_steps(robot, int(tr["trial"]), args.hold) for tr in trials}
-    empty = {}
     for tr in trials:
-        if tr["label"] == "empty":
+        tr["kind"] = tr.get("kind") or "translation"  # logs before 11-13 have translation trials only
+    def hold_window(tr):
+        # rotation steps have a longer ramp and hold: from 0.7 s after the ramp to just before the ramp down
+        if tr["kind"] == "rotation":
+            return float(tr["ramp_s"]) + 0.7, float(tr["ramp_s"]) + float(tr["hold_s"]) - 0.05
+        return args.hold
+
+    steps = {int(tr["trial"]): trial_steps(robot, int(tr["trial"]), hold_window(tr), tr["kind"] == "rotation")
+             for tr in trials}
+    empty = {}  # keyed by step direction; rotation directions have axis 3..5, so the two kinds do not mix
+    for tr in trials:
+        if tr["label"] in ("empty", "rot_empty"):
             for d in steps[int(tr["trial"])][0]:
                 empty.setdefault(d["direction"], []).append(d["df"])
     empty = {k: np.mean(v, axis=0) for k, v in empty.items()}
@@ -137,21 +172,25 @@ def main():
     for tr in trials:
         n = int(tr["trial"])
         st, (t0, t1) = steps[n]
-        row = {"trial": n, "label": tr["label"], "steps": len(st)}
+        rotation = tr["kind"] == "rotation"
+        p = "r" if rotation else "k"
+        row = {"trial": n, "label": tr["label"], "kind": tr["kind"], "steps": len(st)}
         if len(st) >= 3:
             dx_d = np.array([d["dx_d"] for d in st])
             dx = np.array([d["dx"] for d in st])
             df = np.array([d["df"] for d in st])
-            k_spring, r2_spring = stiffness_from_spring(dx_d, dx, float(tr["k_robot_n_per_m"]))
+            k_robot = float(tr["k_robot_nm_per_rad"] if rotation else tr["k_robot_n_per_m"])
+            k_spring, r2_spring = stiffness_from_spring(dx_d, dx, k_robot)
             df_empty = (np.array([empty[d["direction"]] for d in st])
-                        if tr["label"] != "empty" and all(d["direction"] in empty for d in st) else None)
+                        if tr["label"] not in ("empty", "rot_empty") and all(d["direction"] in empty for d in st)
+                        else None)
             k_wrench, r2_wrench = stiffness_from_wrench(dx, df, df_empty)
             row.update({"r2_spring": r2_spring, "r2_wrench": r2_wrench, "empty_subtracted": df_empty is not None})
             for name, k in (("spring", k_spring), ("wrench", k_wrench)):
                 for i, a in enumerate("xyz"):
-                    row[f"k{a}{a}_{name}"] = k[i, i]
-                row[f"kxy_{name}"], row[f"kxz_{name}"], row[f"kyz_{name}"] = k[0, 1], k[0, 2], k[1, 2]
-                row[f"k_volume_{name}"] = float(np.cbrt(max(np.linalg.det(k), 0.0)))
+                    row[f"{p}{a}{a}_{name}"] = k[i, i]
+                row[f"{p}xy_{name}"], row[f"{p}xz_{name}"], row[f"{p}yz_{name}"] = k[0, 1], k[0, 2], k[1, 2]
+                row[f"{p}_volume_{name}"] = float(np.cbrt(max(np.linalg.det(k), 0.0)))
         if args.sensors:
             # laptop time of a robot-PC Unix time: remove the robot PC's offset, add the laptop's
             shift = laptop_offset - args.robot_clock_offset
@@ -160,9 +199,10 @@ def main():
             t0, t1 = float(tr["start_s"]), float(tr["end_s"])
         row.update(sensor_summary(sensors, t0 + args.trim, t1 - args.trim))
         summary.append(row)
-        ks = (f"spring diag {row['kxx_spring']:.0f}/{row['kyy_spring']:.0f}/{row['kzz_spring']:.0f} N/m "
-              f"(R2 {row['r2_spring']:.2f}), wrench {row['kxx_wrench']:.0f}/{row['kyy_wrench']:.0f}/"
-              f"{row['kzz_wrench']:.0f}" if "kxx_spring" in row else "too few steps")
+        unit, fmt = ("Nm/rad", ".1f") if rotation else ("N/m", ".0f")
+        ks = (f"spring diag {row[f'{p}xx_spring']:{fmt}}/{row[f'{p}yy_spring']:{fmt}}/{row[f'{p}zz_spring']:{fmt}} "
+              f"{unit} (R2 {row['r2_spring']:.2f}), wrench {row[f'{p}xx_wrench']:{fmt}}/{row[f'{p}yy_wrench']:{fmt}}/"
+              f"{row[f'{p}zz_wrench']:{fmt}}" if f"{p}xx_spring" in row else "too few steps")
         ph = ", ".join(f"{p} {row[f'{p}_phase_deg']:.0f} deg" for p in PAIRS if f"{p}_phase_deg" in row)
         print(f"trial {n} {tr['label']}: {len(st)} steps, {ks} | sensors {row.get('sensor_packets', 0)} packets {ph}")
 

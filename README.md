@@ -18,7 +18,8 @@ dx_d is the commanded step and dx is how far the handle actually moved. Twelve s
 -z, twice each, in shuffled order) give a 3x3 stiffness matrix K_h by least squares.
 
 A second, independent estimate uses the FR3's own estimate of the external force (`O_F_ext_hat_K`, from its joint
-torque sensors): K = -dF/dx. A trial recorded with nobody holding the handle (`empty`) is subtracted per direction to
+torque sensors): K = -dF/dx. On the FR3 this estimate is the wrench the robot applies to the hand (first lab run,
+2026-11-12), so the analysis uses its negative. A trial recorded with nobody holding the handle (`empty`) is subtracted per direction to
 remove errors of the robot's dynamics model. No force/torque sensor is needed.
 
 Step timing (relative to the robot's home pose):
@@ -31,7 +32,18 @@ Step timing (relative to the robot's home pose):
 | Ramp down| 0.15 s                    | back to home                         |
 | Rest     | random 1.5-2.5 s          | home                                 |
 
-The random rests stop the operator from anticipating the next step. A trial lasts about 40-45 s and the operator keeps
+The random rests stop the operator from anticipating the next step.
+
+**Rotation trials.** A trial whose label starts with `rot_` turns the handle instead: the equilibrium orientation is
+rotated by +-20 deg about the x, y and z axes of the base frame through the end-effector point, twice each, with
+0.6 s ramps and a 1.5 s hold (slower than the shifts, to keep the wrist joints well below their speed guard), while
+the position stays held at 1000 N/m. For these trials the rotational stiffness of the
+robot is lowered from 40 to 10 Nm/rad (blended over 0.5 s at the start and end of the trial), so the hand takes a
+measurable share of each turn; at most about 3.5 Nm acts on the hand. The orientation law is the slave's (quaternion
+vector part), whose torque for small angles is half its gain: the gains are 80 and 20, the effective stiffnesses 40
+and 10 Nm/rad, and trials.csv records the effective value. The same two estimates give the 3x3 rotational stiffness
+in Nm/rad, with the handle's rotation vector for dx and the moments of `O_F_ext_hat_K` for F; `rot_empty` is the
+empty trial of the rotation steps. A trial lasts about 40-45 s and the operator keeps
 one muscle state for the whole trial (for example relaxed, or co-contracting lightly, medium or strongly). With a hand
 stiffness of 300-1500 N/m the handle moves 6-11.5 mm of each 15 mm step and the hand feels 3.5-9 N.
 
@@ -91,19 +103,23 @@ Terminal 2, robot:
    needed for the force-based estimate.
 4. Then the operator holds the handle, for example: `relaxed`, `cocontract_light`, `cocontract_medium`,
    `cocontract_strong`, `relaxed`. Short breaks between trials.
-5. `q` quits. Ctrl+C stops the robot at once.
+5. For the rotational stiffness: `rot_empty` (nobody touching), then the same states with `rot_` in front
+   (`rot_relaxed`, `rot_cocontract_light`, ...).
+6. `q` quits. Ctrl+C stops the robot at once.
 
-Safety stops (the control loop ends): handle more than 50 mm from the equilibrium point, handle faster than 0.5 m/s,
-or a joint above 85 % of a conservative velocity limit. The robot is not driven home after a stop; the next run moves
+Safety stops (the control loop ends): handle more than 50 mm or 35 deg from the equilibrium pose, handle faster than
+0.5 m/s or 2 rad/s, or a joint above 85 % of a conservative velocity limit. The libfranka collision reflex (35 N) also
+stops the robot: biceps and triceps trials need a small, steady pull or push (about 10 N), not a strong one. The robot is not driven home after a stop; the next run moves
 it home first.
 
 ## Logs
 
 `perturbation_test` writes to `perturbation_logs/<date_time>/`:
 
-- `robot.csv`, 1 kHz: time, trial, step, schedule phase, step axis and sign, equilibrium point, handle position and
-  orientation, `O_F_ext_hat_K`, handle velocity.
-- `trials.csv`: label, start and end of each trial (program clock and Unix time), whether it completed.
+- `robot.csv`, 1 kHz: time, trial, step, schedule phase, step axis (0-2 translation, 3-5 rotation) and sign,
+  equilibrium point, handle position and orientation, `O_F_ext_hat_K`, handle velocity, equilibrium rotation offset.
+- `trials.csv`: label, start and end of each trial (program clock and Unix time), whether it completed, kind
+  (translation or rotation) and the robot stiffness used.
 
 `robot_pc_sensor_logger.py` writes `perturbation_logs/<date_time>_sensors/sensors.csv`: Unix time and the 12 values of
 every sensor update.

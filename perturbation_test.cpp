@@ -5,6 +5,8 @@
 // The robot moves to the home pose of the teleoperation slave, then holds the handle with a known Cartesian
 // impedance and shifts its equilibrium point in small steps (+-x, +-y, +-z, shuffled, random rests). With the hand
 // on the handle the handle moves only part of each step: K_h dx = K_r (dx_d - dx), see analyze_perturbation.py.
+// A trial whose label starts with "rot_" turns the equilibrium orientation instead (+-20 deg about x, y, z of the
+// base frame through the end-effector point), with a lower rotational K_r so the hand takes a measurable share.
 // The elastography sensors are logged by a separate program (robot_pc_sensor_logger.py on this PC over USB, or
 // laptop_sensor_logger.py on a laptop); each trial's start and end are written here as Unix time so the two logs
 // can be matched by clock time.
@@ -13,8 +15,8 @@
 //            -lfranka -pthread
 // Usage: perturbation_test <franka-ip> [--out <dir>]      (default log dir perturbation_logs/<date_time>)
 //
-// Console: type a label for the operator's state (e.g. empty, relaxed, cocontract_medium) and press Enter to run
-// one trial; "q" quits. Ctrl+C stops the robot at once.
+// Console: type a label for the operator's state (e.g. empty, relaxed, cocontract_medium; rot_empty, rot_relaxed for
+// rotation steps) and press Enter to run one trial; "q" quits. Ctrl+C stops the robot at once.
 //
 // Files: robot.csv (1 kHz), trials.csv (label, start and end of each trial, also as Unix time).
 //
@@ -90,10 +92,22 @@ constexpr double kRestMaxS = 2.5;
 constexpr int kStepRepetitions = 2;    // each of the 6 directions this many times per trial
 constexpr double kTrialLeadInS = 3.0;  // still hold before the first step (baseline)
 constexpr int kMaxSteps = 6 * kStepRepetitions;
+// Rotation trials: K_r about all three axes during the trial (blended from and back to the holding value)
+// The slave's orientation law uses the quaternion vector part, sin(angle / 2): for small angles the torque per rad is
+// half the gain, so the effective rotational K_r is kRotationTrialStiffness / 2 (written to trials.csv).
+constexpr double kRotationTrialStiffness = 20.0;  // gain, Nm per unit quaternion error; effective 10 Nm/rad
+constexpr double kRotationStepRad = 20.0 * kPi / 180.0;  // at most about 3.5 Nm on the hand
+// Longer ramp than the translation steps: 20 deg in 0.6 s peaks at 0.9 rad/s, below the wrist joint guard
+// (joint 6: 0.85 * 1.5 rad/s); longer hold so the handle settles before the analysis window.
+constexpr double kRotationRampS = 0.6;
+constexpr double kRotationHoldS = 1.5;
+constexpr double kRotationStiffnessBlendS = 0.5;  // lead-in is 3 s, so the blend ends before the first step
 
 // Safety: end the control loop when exceeded
 constexpr double kAbortPositionErrorM = 0.05;
 constexpr double kAbortSpeedMps = 0.5;
+constexpr double kAbortOrientationErrorRad = 35.0 * kPi / 180.0;  // above the 20 deg step
+constexpr double kAbortAngularSpeedRadps = 2.0;
 
 volatile std::sig_atomic_t g_stop_requested = 0;
 
@@ -264,48 +278,58 @@ class MotionGenerator {
 // ---- Step schedule ----
 struct StepPlan {
   double onset_s;
-  int axis;
+  int axis;  // 0..2 translation along x, y, z; 3..5 rotation about x, y, z
   double sign;
 };
 
 enum Phase : int { kIdle = 0, kRest = 1, kRampUp = 2, kHold = 3, kRampDown = 4 };
 
-enum AbortReason : int { kNone = 0, kPositionError = 1, kSpeed = 2, kJointVelocity = 3 };
+enum AbortReason : int { kNone = 0, kPositionError = 1, kSpeed = 2, kJointVelocity = 3, kOrientationError = 4,
+                         kAngularSpeed = 5 };
 
 double raised_cosine(double x) {
   x = std::clamp(x, 0.0, 1.0);
   return 0.5 * (1.0 - std::cos(kPi * x));
 }
 
+double ramp_s(bool rotation) {
+  return rotation ? kRotationRampS : kStepRampS;
+}
+
+double hold_s(bool rotation) {
+  return rotation ? kRotationHoldS : kStepHoldS;
+}
+
 // Offset profile (0..1) and phase of one step at trial time t.
-double step_profile(double t, double onset, Phase* phase) {
+double step_profile(double t, double onset, bool rotation, Phase* phase) {
   const double s = t - onset;
+  const double ramp = ramp_s(rotation), hold = hold_s(rotation);
   if (s < 0.0) {
     *phase = kRest;
     return 0.0;
   }
-  if (s < kStepRampS) {
+  if (s < ramp) {
     *phase = kRampUp;
-    return raised_cosine(s / kStepRampS);
+    return raised_cosine(s / ramp);
   }
-  if (s < kStepRampS + kStepHoldS) {
+  if (s < ramp + hold) {
     *phase = kHold;
     return 1.0;
   }
-  if (s < 2.0 * kStepRampS + kStepHoldS) {
+  if (s < 2.0 * ramp + hold) {
     *phase = kRampDown;
-    return 1.0 - raised_cosine((s - kStepRampS - kStepHoldS) / kStepRampS);
+    return 1.0 - raised_cosine((s - ramp - hold) / ramp);
   }
   *phase = kRest;
   return 0.0;
 }
 
-std::vector<StepPlan> make_plan(std::mt19937& rng) {
+std::vector<StepPlan> make_plan(std::mt19937& rng, bool rotation) {
   std::vector<StepPlan> plan;
   for (int r = 0; r < kStepRepetitions; ++r) {
     for (int axis = 0; axis < 3; ++axis) {
-      plan.push_back({0.0, axis, 1.0});
-      plan.push_back({0.0, axis, -1.0});
+      plan.push_back({0.0, axis + (rotation ? 3 : 0), 1.0});
+      plan.push_back({0.0, axis + (rotation ? 3 : 0), -1.0});
     }
   }
   std::shuffle(plan.begin(), plan.end(), rng);
@@ -313,13 +337,14 @@ std::vector<StepPlan> make_plan(std::mt19937& rng) {
   double t = kTrialLeadInS;
   for (auto& step : plan) {
     step.onset_s = t;
-    t += 2.0 * kStepRampS + kStepHoldS + rest(rng);
+    t += 2.0 * ramp_s(rotation) + hold_s(rotation) + rest(rng);
   }
   return plan;
 }
 
 double trial_duration(const std::array<StepPlan, kMaxSteps>& plan) {
-  return plan[kMaxSteps - 1].onset_s + 2.0 * kStepRampS + kStepHoldS + kRestMinS;
+  const bool rotation = plan[0].axis >= 3;
+  return plan[kMaxSteps - 1].onset_s + 2.0 * ramp_s(rotation) + hold_s(rotation) + kRestMinS;
 }
 
 // ---- Logging: single producer (control callback), single consumer (writer thread) ----
@@ -335,6 +360,7 @@ struct LogRecord {
   double quaternion[4];  // w, x, y, z
   double wrench[6];      // O_F_ext_hat_K
   double velocity[3];
+  double desired_rotation[3];  // equilibrium orientation offset from home, rotation vector in the base frame, rad
 };
 
 constexpr std::size_t kLogCapacity = 1 << 15;
@@ -383,9 +409,10 @@ int main(int argc, char** argv) {
   }
   std::fprintf(robot_file,
                "t_s,trial,step,phase,axis,sign,xd,yd,zd,x,y,z,qw,qx,qy,qz,"
-               "fx,fy,fz,mx,my,mz,vx,vy,vz\n");
+               "fx,fy,fz,mx,my,mz,vx,vy,vz,rdx,rdy,rdz\n");
   std::fprintf(trial_file,
-               "trial,label,start_s,end_s,start_unix_s,end_unix_s,completed,k_robot_n_per_m,step_m,ramp_s,hold_s\n");
+               "trial,label,start_s,end_s,start_unix_s,end_unix_s,completed,k_robot_n_per_m,step_m,ramp_s,hold_s,"
+               "kind,k_robot_nm_per_rad,step_rad\n");
   std::fflush(nullptr);
 
   const auto clock_start = std::chrono::steady_clock::now();
@@ -406,11 +433,12 @@ int main(int argc, char** argv) {
         const LogRecord& r = log_ring->records[tail % kLogCapacity];
         std::fprintf(robot_file,
                      "%.4f,%d,%d,%d,%d,%.0f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
-                     "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f\n",
+                     "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.6f,%.6f,%.6f\n",
                      r.t, r.trial, r.step, r.phase, r.axis, r.sign, r.desired[0], r.desired[1], r.desired[2],
                      r.position[0], r.position[1], r.position[2], r.quaternion[0], r.quaternion[1],
                      r.quaternion[2], r.quaternion[3], r.wrench[0], r.wrench[1], r.wrench[2], r.wrench[3],
-                     r.wrench[4], r.wrench[5], r.velocity[0], r.velocity[1], r.velocity[2]);
+                     r.wrench[4], r.wrench[5], r.velocity[0], r.velocity[1], r.velocity[2], r.desired_rotation[0],
+                     r.desired_rotation[1], r.desired_rotation[2]);
       }
       log_ring->tail.store(tail, std::memory_order_release);
       std::fflush(robot_file);
@@ -455,13 +483,15 @@ int main(int argc, char** argv) {
         label = "trial";
       }
 
-      const std::vector<StepPlan> steps = make_plan(rng);
+      const bool rotation = label.rfind("rot_", 0) == 0;
+      const std::vector<StepPlan> steps = make_plan(rng, rotation);
       std::copy(steps.begin(), steps.end(), plan.begin());
       ++trial;
       const double start_s = elapsed_seconds(clock_start);
       const double start_unix = unix_seconds();
-      std::cout << "[TRIAL " << trial << "] " << label << ": " << steps.size() << " steps, about "
-                << static_cast<int>(trial_duration(plan)) << " s. Hold the handle, do not react to the steps.\n"
+      std::cout << "[TRIAL " << trial << "] " << label << ": " << steps.size() << (rotation ? " rotation" : "")
+                << " steps, about " << static_cast<int>(trial_duration(plan))
+                << " s. Hold the handle, do not react to the steps.\n"
                 << std::flush;
       // Stored after the plan is copied; the control callback reads it with a seq_cst load before the plan.
       requested_trial.store(trial);
@@ -469,9 +499,12 @@ int main(int argc, char** argv) {
       while (!g_stop_requested && finished_trial.load() < trial) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
       }
-      std::fprintf(trial_file, "%d,%s,%.4f,%.4f,%.3f,%.3f,%d,%.1f,%.4f,%.3f,%.3f\n", trial, label.c_str(), start_s,
-                   elapsed_seconds(clock_start), start_unix, unix_seconds(), finished_trial.load() >= trial ? 1 : 0,
-                   kRobotTranslationalStiffness, kStepAmplitudeM, kStepRampS, kStepHoldS);
+      std::fprintf(trial_file, "%d,%s,%.4f,%.4f,%.3f,%.3f,%d,%.1f,%.4f,%.3f,%.3f,%s,%.1f,%.4f\n", trial,
+                   label.c_str(), start_s, elapsed_seconds(clock_start), start_unix, unix_seconds(),
+                   finished_trial.load() >= trial ? 1 : 0, kRobotTranslationalStiffness, kStepAmplitudeM,
+                   ramp_s(rotation), hold_s(rotation), rotation ? "rotation" : "translation",
+                   0.5 * (rotation ? kRotationTrialStiffness : kRobotRotationalStiffness),
+                   rotation ? kRotationStepRad : 0.0);
       std::fflush(trial_file);
       if (!g_stop_requested) {
         std::cout << "[TRIAL " << trial << "] done.\n";
@@ -487,7 +520,8 @@ int main(int argc, char** argv) {
     setDefaultBehavior(robot);
 
     std::cout << "[PERTURBATION] K_r=" << kRobotTranslationalStiffness << " N/m | steps +-" << kStepAmplitudeM * 1000
-              << " mm, hold " << kStepHoldS << " s | logs in " << log_dir << '\n'
+              << " mm, hold " << kStepHoldS << " s | rot_ trials: K_r=" << 0.5 * kRotationTrialStiffness
+              << " Nm/rad, steps +-" << kRotationStepRad * 180.0 / kPi << " deg | logs in " << log_dir << '\n'
               << "WARNING: Franka will move to the initial pose. Do not hold the handle during this move. "
               << "Keep emergency stop accessible. Press Enter to continue..." << std::endl;
     std::cin.get();
@@ -508,8 +542,7 @@ int main(int argc, char** argv) {
     // Slave damping law: D = D_baseline * sqrt(K / K_baseline).
     const double d_translational =
         kBaselineTranslationalDamping * std::sqrt(kRobotTranslationalStiffness / kBaselineTranslationalStiffness);
-    const double d_rotational =
-        kBaselineRotationalDamping * std::sqrt(kRobotRotationalStiffness / kBaselineRotationalStiffness);
+    double k_rotational = kRobotRotationalStiffness;  // blended toward the active trial's value
 
     bool initialized = false;
     Eigen::Vector3d home_position;
@@ -549,22 +582,52 @@ int main(int argc, char** argv) {
         step_index = 0;
       }
       Eigen::Vector3d offset = Eigen::Vector3d::Zero();
+      Eigen::Vector3d rotation_offset = Eigen::Vector3d::Zero();
       Phase phase = kIdle;
       if (active_trial != 0) {
         trial_time += dt;
         if (step_index + 1 < kMaxSteps && trial_time >= plan[step_index + 1].onset_s) {
           ++step_index;
         }
-        const double profile = step_profile(trial_time, plan[step_index].onset_s, &phase);
-        offset[plan[step_index].axis] = plan[step_index].sign * kStepAmplitudeM * profile;
+        const double profile = step_profile(trial_time, plan[step_index].onset_s, plan[0].axis >= 3, &phase);
+        const int axis = plan[step_index].axis;
+        if (axis < 3) {
+          offset[axis] = plan[step_index].sign * kStepAmplitudeM * profile;
+        } else {
+          rotation_offset[axis - 3] = plan[step_index].sign * kRotationStepRad * profile;
+        }
         if (trial_time >= trial_duration(plan)) {
           finished_trial.store(active_trial);
           active_trial = 0;
           offset.setZero();
+          rotation_offset.setZero();
           phase = kIdle;
         }
       }
       const Eigen::Vector3d desired_position = home_position + offset;
+      // Rotation about a base-frame axis through the end-effector point.
+      Eigen::Quaterniond desired_orientation = home_orientation;
+      if (rotation_offset.norm() > 0.0) {
+        desired_orientation =
+            Eigen::Quaterniond(Eigen::AngleAxisd(rotation_offset.norm(), rotation_offset.normalized())) *
+            home_orientation;
+      }
+      const bool rotation_trial = active_trial != 0 && plan[0].axis >= 3;
+      const double k_rotational_target = rotation_trial ? kRotationTrialStiffness : kRobotRotationalStiffness;
+      const double blend_rate = (kRobotRotationalStiffness - kRotationTrialStiffness) / kRotationStiffnessBlendS;
+      k_rotational += std::clamp(k_rotational_target - k_rotational, -blend_rate * dt, blend_rate * dt);
+      const double d_rotational =
+          kBaselineRotationalDamping * std::sqrt(k_rotational / kBaselineRotationalStiffness);
+
+      // Orientation error as in the slave, toward the (possibly turned) equilibrium orientation.
+      Eigen::Quaterniond orientation_for_error = orientation;
+      if (desired_orientation.coeffs().dot(orientation_for_error.coeffs()) < 0.0) {
+        orientation_for_error.coeffs() *= -1.0;
+      }
+      Eigen::Quaterniond error_quaternion = orientation_for_error.inverse() * desired_orientation;
+      error_quaternion.normalize();
+      const Eigen::Vector3d orientation_error =
+          -transform.rotation() * Eigen::Vector3d(error_quaternion.x(), error_quaternion.y(), error_quaternion.z());
 
       // Safety checks: large tracking error, fast handle, joint velocity near the FR3 limits.
       int reason = kNone;
@@ -572,6 +635,10 @@ int main(int argc, char** argv) {
         reason = kPositionError;
       } else if (cartesian_velocity.head<3>().norm() > kAbortSpeedMps) {
         reason = kSpeed;
+      } else if (2.0 * std::asin(std::min(1.0, orientation_error.norm())) > kAbortOrientationErrorRad) {
+        reason = kOrientationError;
+      } else if (cartesian_velocity.tail<3>().norm() > kAbortAngularSpeedRadps) {
+        reason = kAngularSpeed;
       } else {
         for (std::size_t i = 0; i < 7; ++i) {
           if (std::abs(dq[static_cast<int>(i)]) >
@@ -581,21 +648,11 @@ int main(int argc, char** argv) {
         }
       }
 
-      // Orientation error as in the slave.
-      Eigen::Quaterniond orientation_for_error = orientation;
-      if (home_orientation.coeffs().dot(orientation_for_error.coeffs()) < 0.0) {
-        orientation_for_error.coeffs() *= -1.0;
-      }
-      Eigen::Quaterniond error_quaternion = orientation_for_error.inverse() * home_orientation;
-      error_quaternion.normalize();
-      const Eigen::Vector3d orientation_error =
-          -transform.rotation() * Eigen::Vector3d(error_quaternion.x(), error_quaternion.y(), error_quaternion.z());
-
       Vector6d cartesian_wrench;
       cartesian_wrench.head<3>() = -kRobotTranslationalStiffness * (position - desired_position) -
                                    d_translational * cartesian_velocity.head<3>();
       cartesian_wrench.tail<3>() =
-          -kRobotRotationalStiffness * orientation_error - d_rotational * cartesian_velocity.tail<3>();
+          -k_rotational * orientation_error - d_rotational * cartesian_velocity.tail<3>();
 
       const Vector7d task_torque = jacobian.transpose() * cartesian_wrench;
 
@@ -620,6 +677,7 @@ int main(int argc, char** argv) {
         record.desired[i] = desired_position[i];
         record.position[i] = position[i];
         record.velocity[i] = cartesian_velocity[i];
+        record.desired_rotation[i] = rotation_offset[i];
       }
       record.quaternion[0] = orientation.w();
       record.quaternion[1] = orientation.x();
@@ -650,7 +708,8 @@ int main(int argc, char** argv) {
   control_running.store(false);
 
   static const char* kAbortText[] = {"", "tracking error above limit", "handle speed above limit",
-                                     "joint velocity near the FR3 limit"};
+                                     "joint velocity near the FR3 limit", "orientation error above limit",
+                                     "angular speed above limit"};
   if (abort_reason.load() != kNone) {
     std::cerr << "[SAFETY] Stopped: " << kAbortText[abort_reason.load()] << '\n';
   }
