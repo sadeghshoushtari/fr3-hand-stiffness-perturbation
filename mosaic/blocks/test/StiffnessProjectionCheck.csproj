@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Checks StiffnessProjectionModel against projection/mosaic_export.py (make_reference.py), without MOSAIC. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../StiffnessProjectionModel.cs" />
+    <Compile Remove="replay/**" />
+  </ItemGroup>
+</Project>

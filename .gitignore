@@ -1,3 +1,5 @@
 perturbation_test
 perturbation_logs/
 __pycache__/
+mosaic/blocks/test/**/bin/
+mosaic/blocks/test/**/obj/

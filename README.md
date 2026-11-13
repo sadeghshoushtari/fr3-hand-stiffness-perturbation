@@ -68,6 +68,8 @@ stiffness of 300-1500 N/m the handle moves 6-11.5 mm of each 15 mm step and the 
 | `analyze_perturbation.py` | anywhere | Stiffness per trial from the robot log, matched with the sensor log. Needs numpy and scipy. |
 | `stiffness_identification.py` | anywhere | The two stiffness fits used by the analysis. |
 | `mosaic/*.json` | MOSAIC | Online pipelines from sensor features to the stiffness command (see below). |
+| `projection/` | anywhere | Muscle-space arm model, its per-session fit to the measured stiffness, and the export for MOSAIC. Needs numpy and scipy. |
+| `mosaic/blocks/` | MOSAIC | C# block `StiffnessProjection` that runs the fitted model live, and its checks. |
 
 ## Build
 
@@ -156,6 +158,27 @@ two rounds; the model is fitted to those samples. The robot side maps the 0..1 v
 own limits. The `Path` entries are log folders on the computer where the pipeline was built; change them to a local
 folder. The pipelines read the board over Wi-Fi (UDP); on a PC where the board is connected by USB, the `ESP32` block
 has to be replaced by a serial input.
+
+## Projection model and live block
+
+`projection/` maps the two sensor indices to the hand stiffness through the arm: muscle activation per group, muscle
+stiffness (23.4 F / l0), joint stiffness through the muscle moment arms (25 shoulder and elbow muscles fitted to the
+MoBL-ARMS model), and the 3x3 Cartesian stiffness at the handle in the robot base frame. After a session, its 8 group
+parameters are fitted to the stiffness measured by the robot:
+
+```bash
+python3 analyze_perturbation.py perturbation_logs/<date_time> --sensors perturbation_logs/<date_time>_sensors/sensors.csv
+python3 projection/fit_model_from_perturbation.py perturbation_logs/<date_time>/summary.csv --single-index biceps \
+    --index speed2 --drive-hz 45
+```
+
+`--index phase` uses the pair phase change, `--index speed2` the wave speed through the 20 mm pair (relative change
+of the shear modulus); the latter needs a drive frequency at which the phase lag does not wrap (45 Hz). The fit writes
+`stiffness_model.json` and `stiffness_projection.json`. The MOSAIC block `StiffnessProjection` (`mosaic/blocks/`,
+pipeline `mosaic/elastography_projection.json`) reads the second file and outputs, for every sensor packet, the
+stiffness in N/m (K_xx ... K_yz, volume), the two indices and a valid flag; see `mosaic/blocks/README.md` for how to
+add it to MOSAIC and for the checks (the C# block reproduces the Python model to 1e-12, also through a MOSAIC
+pipeline over UDP).
 
 ## Status
 

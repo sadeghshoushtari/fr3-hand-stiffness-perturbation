@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Runs a MOSAIC pipeline JSON without the GUI (block factory + graph builder of MOSAIC), for the UDP replay
+       check of StiffnessProjection. MosaicDir: the MOSAIC clone with the block copied in and registered. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <MosaicDir Condition="'$(MosaicDir)' == ''">C:\Users\Sadegh\mosaic-2.0</MosaicDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(MosaicDir)\MOSAIC\MOSAIC\MOSAIC.csproj" SetTargetFramework="TargetFramework=net8.0" />
+  </ItemGroup>
+</Project>

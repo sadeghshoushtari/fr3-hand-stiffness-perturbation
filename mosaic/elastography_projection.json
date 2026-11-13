@@ -1,0 +1,35 @@
+{
+  "ESP32": {
+    "Type": "UDPClient",
+    "Params": [
+      50500,
+      "double"
+    ],
+    "DesiredRate": 5,
+    "Path": "C:\\Users\\Sadegh\\Desktop\\mosaic_logs\\"
+  },
+  "Stiffness": {
+    "Type": "StiffnessProjection",
+    "Inputs": [
+      "ESP32"
+    ],
+    "Params": [
+      "C:\\Users\\Sadegh\\Desktop\\mosaic_models\\stiffness_projection.json"
+    ],
+    "DesiredRate": 5,
+    "Path": "C:\\Users\\Sadegh\\Desktop\\mosaic_logs\\"
+  },
+  "ToRobot": {
+    "Type": "UDPClient",
+    "Inputs": [
+      "Stiffness"
+    ],
+    "Params": [
+      50511,
+      "double",
+      "127.0.0.1",
+      50510
+    ],
+    "Path": "C:\\Users\\Sadegh\\Desktop\\mosaic_logs\\"
+  }
+}
