@@ -38,8 +38,8 @@ slave), which must never run at the same time.
 
 | Program | Why outside | Link |
 |---|---|---|
-| USB bridge `robot_pc_sensor_logger.py --udp 127.0.0.1:50500 --commands 50601` | no built-in block reads the board over USB | sends the board's features to MOSAIC as if they came over Wi-Fi; switches the vibrator on the Vibrator card's commands |
-| Perturbation program `perturbation_test <ip> --udp` | libfranka 1 kHz real-time control | follows the offset from MOSAIC (clamped to +-20 mm, at most 0.1 m/s, back to zero 0.25 s after the last packet), streams its state |
+| USB bridge `./sensors.sh` (`robot_pc_sensor_logger.py`, MOSAIC ports by default) | no built-in block reads the board over USB | sends the board's features to MOSAIC as if they came over Wi-Fi; switches the vibrator on the Vibrator card's commands |
+| Perturbation program `./robot.sh` (`perturbation_test`, robot 169.254.105.210, MOSAIC mode by default) | libfranka 1 kHz real-time control | follows the offset from MOSAIC (clamped to +-20 mm, at most 0.1 m/s, back to zero 0.25 s after the last packet), streams its state |
 | Teleoperation slave (with energy tank) | libfranka 1 kHz real-time control | reads the stiffness command on port 4500 (to be added) |
 
 ## Ports
@@ -55,18 +55,28 @@ slave), which must never run at the same time.
 | 4500 | MOSAIC -> slave | 1 double, stiffness command (N/m) |
 | 50510 | MOSAIC -> monitor | 10 doubles, full stiffness output |
 
-## Calibration session, step by step (robot PC)
+## Folders (robot PC)
 
-Before: the six block files are in MOSAIC and MOSAIC is built (`mosaic/blocks/README.md`); `perturbation_test` is
-built (`g++ -std=c++17 -O2 -Wall -Wextra perturbation_test.cpp -I/usr/include/eigen3 -o perturbation_test -lfranka
--pthread` in the repository folder); the board is on USB.
+Everything sits in the thesis folder `~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis`:
+`fr3-hand-stiffness-perturbation/` (this repository), `mosaic-2.0/` (MOSAIC with the blocks installed, see
+`mosaic/blocks/README.md`), `mosaic_models/` (model file), `mosaic_logs/` (logs). The pipelines in this folder already
+use these paths. In the repository, three short commands:
 
-1. Terminal 1, USB bridge:
-   `cd ~/fr3-hand-stiffness-perturbation && python3 robot_pc_sensor_logger.py --udp 127.0.0.1:50500 --commands 50601`
-2. Terminal 2, robot: `cd ~/fr3-hand-stiffness-perturbation && ./perturbation_test <robot-ip> --udp`. Hands off the
-   handle, press Enter: the robot moves to the home pose and then holds the handle.
-3. Terminal 3, MOSAIC: `cd ~/mosaic-2.0/MOSAIC && dotnet run --project MOSAIC.Desktop`. File -> Open ->
-   `session_calibration.json`. The MOSAIC terminal prints what the Calibration block does.
+| Command | Starts |
+|---|---|
+| `./sensors.sh` | USB bridge (board -> MOSAIC port 50500, vibrator commands on port 50601) |
+| `./robot.sh` | perturbation program for robot 169.254.105.210 in MOSAIC mode (builds it first if needed) |
+| `./mosaic.sh` | MOSAIC (`mosaic-2.0` in the thesis folder) |
+
+## Calibration session, step by step
+
+The board is on USB; the emergency stop is within reach. Three terminals, each first
+`cd ~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/fr3-hand-stiffness-perturbation`:
+
+1. Terminal 1: `./sensors.sh`
+2. Terminal 2: `./robot.sh`. Hands off the handle, press Enter: the robot moves to the home pose and holds the handle.
+3. Terminal 3: `./mosaic.sh`. In MOSAIC: File -> Open -> `fr3-hand-stiffness-perturbation/mosaic/session_calibration.json`.
+   Terminal 3 prints what the Calibration block does.
 4. If the Clock card is not running, press its Start.
 5. Vibrator card: ON. Terminal 1 prints `command ... -> vibrator on`.
 6. One trial per operator state, in this order: empty, relaxed, effort30, effort60, effort100.
@@ -74,25 +84,25 @@ built (`g++ -std=c++17 -O2 -Wall -Wextra perturbation_test.cpp -I/usr/include/ei
      vertical, elbow 90 deg) and keeps the state (relaxed, or co-contraction at about 30 / 60 / 100 %).
    - Effort card: select the state, press Start capture.
    - PerturbationPlan card: press Start. The robot makes 6 steps (33 s).
-   - When the card shows that it has finished: Effort card, Stop capture. The MOSAIC terminal prints the trial:
+   - When the card shows that it has finished: Effort card, Stop capture. Terminal 3 prints
      `trial n (...) done: 6 cycles, K diag ... N/m, phase biceps ... deg, triceps ... deg`.
-7. Effort card: select fit, Start capture, then Stop capture. The terminal prints the relaxed reference, the
-   direction of each pair, the fitted parameters and `model written to ...`.
-8. Vibrator card: OFF. Terminal 2: q. Terminal 1: q.
+7. Effort card: select fit, Start capture, then Stop capture. Terminal 3 prints the relaxed reference, the direction
+   of each pair, the fitted parameters and `model written to ...`.
+8. Vibrator card: OFF. Terminal 2: q and Enter. Terminal 1: q and Enter.
 
-The trials and the fit are in `/home/f_airob/mosaic_logs/calibration/calibration_<date_time>.json`; the previous
-model file is kept as `stiffness_projection.json.bak`.
+Model: `mosaic_models/stiffness_projection.json` (the previous one is kept as `.bak`); trials and fit:
+`mosaic_logs/calibration/calibration_<date_time>.json`.
 
-## Teleoperation session, step by step (robot PC)
+## Teleoperation session, step by step
 
-1. Terminal 1, USB bridge as above.
+1. Terminal 1: `./sensors.sh`
 2. Teleoperation slave and master as usual (the slave reads the stiffness command on port 4500 once that input is
-   added; until then watch the output with `python3 ~/mosaic_models/watch_stiffness.py`).
-3. MOSAIC: File -> Open -> `session_run.json`. Vibrator card: ON.
+   added; until then watch the output with `python3 ../mosaic_models/watch_stiffness.py`).
+3. Terminal 3: `./mosaic.sh`, File -> Open -> `mosaic/session_run.json`. Vibrator card: ON.
 4. Session card: select relaxed, Start capture, operator relaxes for 5 s, Stop capture.
-5. Session card: select tense, Start capture, operator co-contracts for 5 s, Stop capture. The terminal prints the
+5. Session card: select tense, Start capture, operator co-contracts for 5 s, Stop capture. Terminal 3 prints the
    phase change and the direction of each pair; the model file is updated.
-6. Teleoperate. At the end: Vibrator card OFF, Terminal 1: q.
+6. Teleoperate. At the end: Vibrator card OFF, Terminal 1: q and Enter.
 
 Repeat steps 4-5 after the sensors were taken off and put back on.
 

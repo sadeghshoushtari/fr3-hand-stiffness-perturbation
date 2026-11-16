@@ -3,7 +3,7 @@
     "Type": "UDPClient",
     "Params": [50500, "double"],
     "DesiredRate": 5,
-    "Path": "/home/f_airob/mosaic_logs/run/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/run/"
   },
   "Vibrator": {
     "Type": "CommandSender",
@@ -17,7 +17,7 @@
     "Type": "UDPClient",
     "Params": [50700, "float"],
     "DesiredRate": 100,
-    "Path": "/home/f_airob/mosaic_logs/run/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/run/"
   },
   "Session": {
     "Type": "Trigger",
@@ -26,9 +26,9 @@
   "Stiffness": {
     "Type": "StiffnessProjection",
     "Inputs": ["ESP32", "IMU", "Session"],
-    "Params": ["/home/f_airob/mosaic_models/stiffness_projection.json", "imu:IMU", "session:Session"],
+    "Params": ["/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "imu:IMU", "session:Session"],
     "DesiredRate": 5,
-    "Path": "/home/f_airob/mosaic_logs/run/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/run/"
   },
   "StiffnessVolume": {
     "Type": "Projector",
@@ -44,7 +44,7 @@
     "Type": "UDPClient",
     "Inputs": ["SafeRange"],
     "Params": [50511, "double", "127.0.0.1", 4500],
-    "Path": "/home/f_airob/mosaic_logs/run/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/run/"
   },
   "ToMonitor": {
     "Type": "UDPClient",

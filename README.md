@@ -86,18 +86,19 @@ The sensor board is plugged into the robot PC by USB. Your user needs access to 
 Terminal 1, sensors:
 
 ```bash
-python3 robot_pc_sensor_logger.py            # options: --port /dev/ttyUSB0 --out <dir> --udp 127.0.0.1:50500 --commands 50601
+python3 robot_pc_sensor_logger.py            # or ./sensors.sh; options: --port /dev/ttyUSB0 --out <dir> --udp off --commands 0
 ```
 
 Type `on` and Enter to start the exciter, `off` to stop it, `q` to quit (the exciter is always switched off on exit).
 Every 2 s it prints the four amplitudes and the phase of each pair, and warns if a channel reads exactly zero (usually
-a loose sensor cable). `--udp` also forwards every feature line to MOSAIC as the board's UDP packet, `--commands`
-lets MOSAIC switch the exciter (Vibrator card).
+a loose sensor cable). By default it also forwards every feature line to MOSAIC as the board's UDP packet (port 50500)
+and lets MOSAIC switch the exciter (Vibrator card, port 50601).
 
 Terminal 2, robot:
 
 ```bash
-./perturbation_test <robot-ip>               # options: --out <dir>, --udp (MOSAIC drives the perturbations)
+./perturbation_test --console                # trials from this console; robot 169.254.105.210 unless an IP is given
+./robot.sh                                   # MOSAIC drives the perturbations (default mode; builds the program first)
 ```
 
 1. The program connects and asks you to press Enter. The robot then moves to the home pose. **Do not hold the handle

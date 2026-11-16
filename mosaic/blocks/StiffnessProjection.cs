@@ -17,8 +17,8 @@ namespace MOSAIC.Models.Elastography;
 /// "Stiffness": {
 ///   "Type": "StiffnessProjection",
 ///   "Inputs": [ "ESP32", "IMU", "Session" ],
-///   "Params": [ "/home/f_airob/mosaic_models/stiffness_projection.json", "imu:IMU", "session:Session" ],
-///   "Path": "/home/f_airob/mosaic_logs/run/"
+///   "Params": [ "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "imu:IMU", "session:Session" ],
+///   "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/run/"
 /// }
 /// </code>
 /// Params[0]: model file (stiffness_projection.json, from the PerturbationCalibration block or

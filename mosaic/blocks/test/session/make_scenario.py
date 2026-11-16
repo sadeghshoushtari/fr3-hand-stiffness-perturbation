@@ -100,8 +100,8 @@ def main():
     (out / "actions_run.txt").write_text("\n".join(run_actions) + "\n")
     for name, src in (("calibration", "session_calibration.json"), ("run", "session_run.json")):
         text = (REPO / "mosaic" / src).read_text()
-        text = text.replace("/home/f_airob/mosaic_models/", win.replace("\\", "/") + "/model/")
-        text = text.replace("/home/f_airob/mosaic_logs/", win.replace("\\", "/") + "/logs/")
+        text = text.replace("/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/", win.replace("\\", "/") + "/model/")
+        text = text.replace("/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/", win.replace("\\", "/") + "/logs/")
         for port, test_port in PORTS.items():
             text = text.replace(f"{port}]", f"{test_port}]").replace(f"[{port},", f"[{test_port},")
         (out / f"{name}.json").write_text(text)

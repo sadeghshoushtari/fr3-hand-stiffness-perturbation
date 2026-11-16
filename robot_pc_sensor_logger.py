@@ -1,7 +1,7 @@
 """Sensor log on the robot PC, board connected by USB (firmware esp32_robot_stiffness 1.1.0 or later).
 
   python3 robot_pc_sensor_logger.py [--port /dev/ttyUSB0] [--out <dir>] [--max-min 60] [--udp 127.0.0.1:50500]
-                                    [--commands 50601]
+                                    [--commands 50601]          (or ./sensors.sh)
 
 The board prints one line per feature update, "F,<12 values>" (same values as its UDP packet). Every line is written
 with this PC's Unix time to <out>/sensors.csv. perturbation_test runs on the same PC and writes the trial times as
@@ -9,10 +9,10 @@ Unix time, so no clock correction is needed:
 
   python3 analyze_perturbation.py perturbation_logs/<date_time> --sensors <out>/sensors.csv
 
---udp HOST:PORT also sends every line as 12 doubles (the board's UDP packet format) to that address, e.g. to the
-MOSAIC pipeline mosaic/elastography_projection.json, whose input block listens on port 50500.
+--udp HOST:PORT also sends every line as 12 doubles (the board's UDP packet format) to that address; default
+127.0.0.1:50500, the ESP32 block of the MOSAIC pipelines; --udp off sends nothing.
 
---commands PORT listens on that UDP port for vibrator commands, so that MOSAIC switches the vibrator: a text ending
+--commands PORT listens on that UDP port (default 50601, 0 = off) for vibrator commands, so that MOSAIC switches the vibrator: a text ending
 in "on" switches it on, one ending in "off" switches it off (the CommandSender block sends e.g. "IMU0on" / "IMU0off";
 mosaic/session_*.json use port 50601). The same re-arm and time limit as the keyboard apply.
 
@@ -78,11 +78,11 @@ def main():
     ap.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "perturbation_logs" /
                     time.strftime("%Y%m%d_%H%M%S_sensors"))
     ap.add_argument("--max-min", type=float, default=60.0, help="exit (vibrator off) after this many minutes")
-    ap.add_argument("--udp", help="also send every line as 12 doubles to HOST:PORT (MOSAIC: 127.0.0.1:50500)")
-    ap.add_argument("--commands", type=int, help="UDP port for vibrator on/off commands (MOSAIC: 50601)")
+    ap.add_argument("--udp", default="127.0.0.1:50500", help="send every line as 12 doubles to HOST:PORT (off: none)")
+    ap.add_argument("--commands", type=int, default=50601, help="UDP port for vibrator on/off commands (0: none)")
     args = ap.parse_args()
     udp = None
-    if args.udp:
+    if args.udp and args.udp != "off":
         host, port = args.udp.rsplit(":", 1)
         udp = (socket.socket(socket.AF_INET, socket.SOCK_DGRAM), (host, int(port)))
     commands = None

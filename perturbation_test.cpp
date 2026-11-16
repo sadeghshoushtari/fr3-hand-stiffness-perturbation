@@ -13,12 +13,15 @@
 //
 // Build: g++ -std=c++17 -O2 -Wall -Wextra perturbation_test.cpp -I/usr/include/eigen3 -o perturbation_test
 //            -lfranka -pthread
-// Usage: perturbation_test <franka-ip> [--out <dir>] [--udp]      (default log dir perturbation_logs/<date_time>)
+// Usage: perturbation_test [<franka-ip>] [--out <dir>] [--console]
+//        (default robot 169.254.105.210, default log dir perturbation_logs/<date_time>)
 //
-// Console: type a label for the operator's state (e.g. empty, relaxed, cocontract_medium; rot_empty, rot_relaxed for
-// rotation steps) and press Enter to run one trial; "q" quits. Ctrl+C stops the robot at once.
+// Default: MOSAIC drives the perturbations (see below). Ctrl+C stops the robot at once.
 //
-// --udp: MOSAIC drives the perturbations (mosaic/session_calibration.json) instead of the console trials. The
+// --console: trials from the console instead: type a label for the operator's state (e.g. empty, relaxed,
+// cocontract_medium; rot_empty, rot_relaxed for rotation steps) and press Enter to run one trial; "q" quits.
+//
+// MOSAIC mode (mosaic/session_calibration.json), the default: the
 // equilibrium offset comes as 6 doubles (dx, dy, dz in m, rx, ry, rz in rad; the rotations are ignored) on UDP port
 // 50900; each axis is clamped to +-20 mm, the offset follows the command at most 0.1 m/s and returns to zero when no
 // packet came for 0.25 s. The robot state goes to 127.0.0.1:50910 at 1 kHz as 15 doubles: t, x, y, z, x_d, y_d, z_d,
@@ -409,23 +412,27 @@ std::string default_log_dir() {
 
 int main(int argc, char** argv) {
   std::string log_dir = default_log_dir();
-  bool udp_mode = false;
-  bool usage_error = argc < 2;
-  for (int i = 2; i < argc; ++i) {
+  std::string robot_ip = "169.254.105.210";
+  bool udp_mode = true;
+  bool usage_error = false;
+  for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--out" && i + 1 < argc) {
       log_dir = argv[++i];
+    } else if (arg == "--console") {
+      udp_mode = false;
     } else if (arg == "--udp") {
       udp_mode = true;
+    } else if (i == 1 && arg.rfind("--", 0) != 0) {
+      robot_ip = arg;
     } else {
       usage_error = true;
     }
   }
   if (usage_error) {
-    std::cerr << "Usage: " << argv[0] << " <franka-ip> [--out <dir>] [--udp]\n";
+    std::cerr << "Usage: " << argv[0] << " [<franka-ip>] [--out <dir>] [--console]\n";
     return 1;
   }
-  const std::string robot_ip = argv[1];
 
   std::signal(SIGINT, sigint_handler);
 
@@ -559,7 +566,7 @@ int main(int argc, char** argv) {
         break;
       }
       if (udp_mode) {
-        std::cout << "MOSAIC drives the perturbations (--udp); type q to quit.\n";
+        std::cout << "MOSAIC drives the perturbations (start with --console for console trials); type q to quit.\n";
         continue;
       }
       if (label.empty()) {
@@ -603,7 +610,7 @@ int main(int argc, char** argv) {
     setDefaultBehavior(robot);
 
     if (udp_mode) {
-      std::cout << "[PERTURBATION] --udp: offsets from MOSAIC on port " << kUdpOffsetPort << " (clamped to +-"
+      std::cout << "[PERTURBATION] MOSAIC mode: offsets on port " << kUdpOffsetPort << " (clamped to +-"
                 << kUdpMaxOffsetM * 1000 << " mm), state to " << kUdpStateHost << ":" << kUdpStatePort << '\n';
     }
     std::cout << "[PERTURBATION] K_r=" << kRobotTranslationalStiffness << " N/m | steps +-" << kStepAmplitudeM * 1000

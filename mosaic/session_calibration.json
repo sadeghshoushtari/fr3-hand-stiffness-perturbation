@@ -3,7 +3,7 @@
     "Type": "UDPClient",
     "Params": [50500, "double"],
     "DesiredRate": 5,
-    "Path": "/home/f_airob/mosaic_logs/calibration/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   },
   "Vibrator": {
     "Type": "CommandSender",
@@ -17,13 +17,13 @@
     "Type": "UDPClient",
     "Params": [50700, "float"],
     "DesiredRate": 100,
-    "Path": "/home/f_airob/mosaic_logs/calibration/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   },
   "LoadCell": {
     "Type": "UDPClient",
     "Params": [50800, "double"],
     "DesiredRate": 1000,
-    "Path": "/home/f_airob/mosaic_logs/calibration/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   },
   "Effort": {
     "Type": "Trigger",
@@ -38,7 +38,7 @@
     "Inputs": ["Clock"],
     "DesiredRate": 100,
     "Params": [1.0, "+x:0.015;0;0;0;0;0", "-x:-0.015;0;0;0;0;0", "+y:0;0.015;0;0;0;0", "-y:0;-0.015;0;0;0;0", "+z:0;0;0.015;0;0;0", "-z:0;0;-0.015;0;0;0"],
-    "Path": "/home/f_airob/mosaic_logs/calibration/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   },
   "PlanVector": {
     "Type": "Selector",
@@ -49,12 +49,12 @@
     "Inputs": ["PlanVector"],
     "Params": [50910, "double", "127.0.0.1", 50900],
     "DesiredRate": 1000,
-    "Path": "/home/f_airob/mosaic_logs/calibration/"
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   },
   "Calibration": {
     "Type": "PerturbationCalibration",
     "Inputs": ["ESP32", "Robot", "LoadCell", "IMU", "PerturbationPlan", "Effort"],
-    "Params": ["/home/f_airob/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;0;90", "axes:xyz"],
-    "Path": "/home/f_airob/mosaic_logs/calibration/"
+    "Params": ["/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;0;90", "axes:xyz"],
+    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   }
 }

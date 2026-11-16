@@ -19,8 +19,8 @@ namespace MOSAIC.Models.Elastography;
 /// "Calibration": {
 ///   "Type": "PerturbationCalibration",
 ///   "Inputs": [ "ESP32", "Robot", "LoadCell", "IMU", "PerturbationPlan", "Effort" ],
-///   "Params": [ "/home/f_airob/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;0;90" ],
-///   "Path": "/home/f_airob/mosaic_logs/calibration/"
+///   "Params": [ "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;0;90" ],
+///   "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
 /// }
 /// </code>
 /// Params[0]: model file to write. Further Params, "key:value":
