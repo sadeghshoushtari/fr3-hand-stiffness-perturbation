@@ -2,7 +2,8 @@
 
 python check_session.py <dir>   (<dir>: scenario.json, model/, logs/, sim_*.csv of both runs)
 
-Calibration: identified K per trial vs the simulated hand; relaxed reference, index direction and scale vs the
+Calibration: trials of the perturbation program (one per Effort start, none for fit); identified K per trial vs the
+simulated hand; relaxed reference, index direction and scale vs the
 calibration mounting; the block's fit vs StiffnessModel.fit on the same trials; fitted model vs the true model.
 Run: Session trigger result (reference and direction of the new mounting); pipeline output vs mosaic_export
 (projection/) on the same feature vectors at the session posture and at the IMU posture; stiffness command =
@@ -41,6 +42,11 @@ def main():
     k_empty = np.array(sc["k_empty"])
 
     # --- calibration ---
+    rows = [line.split(",") for line in (d / "robot_log" / "trials.csv").read_text().splitlines()[1:]]
+    labels = [r[1] for r in rows]
+    check("calibration: trials of the perturbation program",
+          labels == ["empty", "relaxed", "effort30", "effort60", "effort100"] and all(r[6] == "1" for r in rows),
+          f"{labels}, completed {[r[6] for r in rows]}")
     session = json.loads(sorted((d / "logs" / "calibration").glob("calibration_*.json"))[-1].read_text())
     trials = session["trials"]
     windows = {w["level"]: w for w in sc["calibration"]["windows"]}
@@ -49,7 +55,8 @@ def main():
     for t in trials:
         w = windows[names[round(t["code"], 1) if t["code"] > -0.5 else -1]]
         errs.append(rel(t["K"], w["K_hand"]) if t["K"] is not None else np.inf)
-    check("calibration: K per trial", len(trials) == 5 and max(errs) < 0.03,
+    check("calibration: K per trial", len(trials) == 5 and max(errs) < 0.03
+          and all(len(t["cycles"]) == 12 for t in trials),
           f"{len(trials)} trials, cycles {[len(t['cycles']) for t in trials]}, relative error vs simulated hand "
           + " ".join(f"{e:.3f}" for e in errs))
 

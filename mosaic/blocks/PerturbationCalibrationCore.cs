@@ -12,11 +12,14 @@ namespace MOSAIC.Models.Elastography;
 /// Perturbation calibration without MOSAIC dependencies (the PerturbationCalibration block feeds it).
 /// </summary>
 /// <remarks>
-/// Trials: an Effort action starts a trial (code: -1 empty handle, 0 relaxed, 0..1 co-contraction level), stop capture
-/// ends it; code 9 ("fit") fits the model to all trials of the session and writes the model file.
-/// Cycles: within a trial each Stimulus cycle (rest -> rise -> hold -> capture -> fall) gives one perturbation:
-/// dx = mean handle position in capture - mean in rest (rest after <see cref="Options.RestSettleS"/>), likewise the
-/// equilibrium dx_d and the force. Restoring force of the hand:
+/// Trials: an Effort action starts a trial (code: -1 empty handle, 0 relaxed, 0..1 co-contraction level); the trial ends
+/// when the perturbation program reports the end of its trial (state value 16 back to 0) or at stop capture; code 9
+/// ("fit") fits the model to all trials of the session and writes the model file.
+/// Cycles: within a trial each push of the perturbation program (state value 15: 1 rest, 2 push out, 3 hold, 4 return)
+/// gives one perturbation: dx = mean handle position in the hold after <see cref="Options.CaptureSettleS"/> - mean in
+/// the rest after <see cref="Options.RestSettleS"/>, likewise the equilibrium dx_d and the force. A Stimulus block
+/// (rest -> rise -> hold -> capture -> fall) can drive the cycles instead (robot state without values 15, 16).
+/// Restoring force of the hand:
 ///   robot    dF = K_r (dx_d - dx)     (robot as spring: K_h dx = K_r (dx_d - dx))
 ///   wrench   dF = sign d(F_ext)       (libfranka O_F_ext_hat_K; on the FR3 it is the force of the robot on the hand
 ///                                      (analyze_perturbation.py, run of 11-12), so sign +1)
@@ -27,11 +30,13 @@ namespace MOSAIC.Models.Elastography;
 /// Fit: K_empty (mean of empty trials) is subtracted; relaxed reference = circular mean of the relaxed trials;
 /// direction per pair = sign of the phase change from relaxed to the strongest trials; index per trial, scale = its
 /// largest value, sigma = max(index, 0) / scale; (a_g, b_g) fitted with <see cref="StiffnessFit.Fit"/>.
-/// Robot state vector (perturbation.cpp): t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r.
+/// Robot state vector (perturbation.cpp): t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r, phase,
+/// trial number.
 /// </remarks>
 public sealed class PerturbationCalibrationCore
 {
     public const int RobotStateLength = 15;
+    public const int RobotStateLengthWithPhase = 17;
     public const double FitCode = 9.0;
 
     public sealed class Options
@@ -51,6 +56,7 @@ public sealed class PerturbationCalibrationCore
         public double LagOffsetDeg { get; set; }
         public string? SingleIndex { get; set; }
         public double RestSettleS { get; set; } = 1.0;
+        public double CaptureSettleS { get; set; } = 0.5;
         public int MinCycles { get; set; } = 3;
     }
 
@@ -88,6 +94,8 @@ public sealed class PerturbationCalibrationCore
     private string _stimState = "idle";
     private double _stimStateSince;
     private double? _trialCode;
+    private int _boundRobotTrial, _closedRobotTrial;  // trial numbers of the perturbation program
+    private double _lastRobotT = double.NegativeInfinity;
     private List<Cycle>? _cycles;
     private readonly string _sessionStamp;
 
@@ -152,6 +160,16 @@ public sealed class PerturbationCalibrationCore
     {
         if (s.Count < RobotStateLength)
             return;
+        if (s.Count >= RobotStateLengthWithPhase)
+        {
+            // MOSAIC delivers every packet in its own task: drop packets older than the last one, time with the
+            // robot clock
+            t = s[0];
+            if (t <= _lastRobotT)
+                return;
+            _lastRobotT = t;
+            OnRobotPhase((int)Math.Round(s[15]), (int)Math.Round(s[16]), t);
+        }
         Window? w = _stimState switch
         {
             "rest" when t - _stimStateSince >= _o.RestSettleS => _rest,
@@ -172,6 +190,28 @@ public sealed class PerturbationCalibrationCore
         w.N++;
         if (w == _capture)
             _captureKr += s[14];
+    }
+
+    /// <summary>
+    /// Phase and trial number of the perturbation program. An open trial is bound to the first robot trial that starts
+    /// after it (not one already closed); its cycles come from that robot trial only, and it ends with it.
+    /// </summary>
+    private void OnRobotPhase(int phase, int robotTrial, double t)
+    {
+        if (_trialCode is not null && _boundRobotTrial == 0 && robotTrial > _closedRobotTrial)
+            _boundRobotTrial = robotTrial;
+        if (_trialCode is null || _boundRobotTrial == 0 || robotTrial != _boundRobotTrial)
+        {
+            OnStimulus("idle", t);
+            if (_trialCode is not null && _boundRobotTrial != 0)
+                CloseTrial();  // the robot trial ended
+            return;
+        }
+        string state = phase switch { 1 => "rest", 2 => "rise", 3 => "hold", 4 => "fall", _ => "idle" };
+        if (state == "hold" && (_stimState == "capture"
+                                || (_stimState == "hold" && t - _stimStateSince >= _o.CaptureSettleS)))
+            state = "capture";
+        OnStimulus(state, t);
     }
 
     /// <summary>Stimulus state (rest, rise, hold, capture, fall) at time t, s.</summary>
@@ -268,6 +308,9 @@ public sealed class PerturbationCalibrationCore
         double code = _trialCode!.Value;
         var cycles = _cycles ?? new List<Cycle>();
         _trialCode = null;
+        if (_boundRobotTrial != 0)
+            _closedRobotTrial = _boundRobotTrial;
+        _boundRobotTrial = 0;
         _cycles = null;
         var k = cycles.Count >= _o.MinCycles
             ? StiffnessFit.Identify(cycles.Select(c => c.Dx).ToList(), cycles.Select(c => c.Df).ToList())

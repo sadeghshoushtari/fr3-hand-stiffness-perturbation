@@ -3,29 +3,31 @@
 // Measures the operator's arm stiffness at the FR3 handle. Single self-contained file.
 //
 // The robot moves to the home pose of the teleoperation slave, then holds the handle with a known Cartesian
-// impedance and shifts its equilibrium point in small steps (+-x, +-y, +-z, shuffled, random rests). With the hand
-// on the handle the handle moves only part of each step: K_h dx = K_r (dx_d - dx), see analyze_perturbation.py.
-// A trial whose label starts with "rot_" turns the equilibrium orientation instead (+-20 deg about x, y, z of the
-// base frame through the end-effector point), with a lower rotational K_r so the hand takes a measurable share.
-// The elastography sensors are logged by a separate program (sensors.py on this PC over USB, or
-// laptop_sensor_logger.py on a laptop); each trial's start and end are written here as Unix time so the two logs
-// can be matched by clock time.
+// impedance (K_r = 500 N/m) and runs the perturbation protocol of J. Zeynalli's thesis (calibration phase): per
+// trial, 12 pushes of 5 cm in random order, the 6 axial directions (+-x, +-y, +-z) and 6 diagonals drawn from the
+// 12 diagonals in the xy, xz and yz planes. Each push: the equilibrium moves 5 cm in 1 s (raised cosine), holds 1 s,
+// returns in 1 s, then a random rest of 1.5-2 s, so the operator cannot anticipate the next push (about 60 s per
+// trial). With the hand on the handle the handle moves only part of each push: K_h dx = K_r (dx_d - dx), see
+// analyze_perturbation.py. A console trial whose label starts with "rot_" turns the equilibrium orientation instead
+// (+-20 deg about x, y, z of the base frame through the end-effector point), with a lower rotational K_r.
+// The elastography sensors are logged by a separate program (sensors.py); each trial's start and end are written
+// here as Unix time so the two logs can be matched by clock time.
 //
 // Build: g++ -std=c++17 -O2 -Wall -Wextra perturbation.cpp -I/usr/include/eigen3 -o perturbation
 //            -lfranka -pthread
 // Usage: ./perturbation [<franka-ip>] [--out <dir>] [--console]
 //        (default robot 169.254.105.210, default log dir perturbation_logs/<date_time>)
+// Ctrl+C or "q" + Enter stops the robot.
 //
-// Default: MOSAIC drives the perturbations (see below). Ctrl+C stops the robot at once.
+// Default (MOSAIC, mosaic/session_calibration.json): the Effort card of MOSAIC starts each trial. Its Start capture
+// sends the operator state as one double to UDP port 50900 (-1 empty handle, 0 relaxed, 0..1 effort; 9 = fit is
+// ignored); the program runs one trial of 12 pushes and prints each push. A start while a trial runs is ignored.
+// The robot state goes to 127.0.0.1:50910 at 100 Hz as 17 doubles: t, x, y, z, x_d, y_d, z_d, F_ext x, y, z
+// (O_F_ext_hat_K), q_w, q_x, q_y, q_z, K_r, phase (0 idle, 1 rest, 2 push out, 3 hold, 4 return), trial number
+// (0 between trials). The console only takes "q".
 //
 // --console: trials from the console instead: type a label for the operator's state (e.g. empty, relaxed,
 // cocontract_medium; rot_empty, rot_relaxed for rotation steps) and press Enter to run one trial; "q" quits.
-//
-// MOSAIC mode (mosaic/session_calibration.json), the default: the
-// equilibrium offset comes as 6 doubles (dx, dy, dz in m, rx, ry, rz in rad; the rotations are ignored) on UDP port
-// 50900; each axis is clamped to +-20 mm, the offset follows the command at most 0.1 m/s and returns to zero when no
-// packet came for 0.25 s. The robot state goes to 127.0.0.1:50910 at 1 kHz as 15 doubles: t, x, y, z, x_d, y_d, z_d,
-// F_ext x, y, z (O_F_ext_hat_K), q_w, q_x, q_y, q_z, K_r. The console then only takes "q".
 //
 // Files: robot.csv (1 kHz), trials.csv (label, start and end of each trial, also as Unix time).
 //
@@ -94,16 +96,21 @@ constexpr std::array<double, 7> kJointVelocityGuardLimitsRadps = {2.0, 1.0, 1.5,
 constexpr double kJointVelocityGuardStopRatio = 0.85;
 
 // ---- Perturbation test ----
-constexpr double kRobotTranslationalStiffness = 1000.0;  // N/m, known K_r for the robot-as-spring estimate
+// Zeynalli protocol: K_r as in Teleoperate_calibrate.cpp; at 5 cm the robot force stays below 25 N, under the 35 N
+// collision threshold of the slave.
+constexpr double kRobotTranslationalStiffness = 500.0;  // N/m, known K_r for the robot-as-spring estimate
 constexpr double kRobotRotationalStiffness = kBaselineRotationalStiffness;  // holds the handle orientation
-constexpr double kStepAmplitudeM = 0.015;
-constexpr double kStepRampS = 0.15;    // raised-cosine ramp to and from the offset
+constexpr double kStepAmplitudeM = 0.05;
+constexpr double kStepRampS = 1.0;     // raised-cosine ramp to and from the offset
 constexpr double kStepHoldS = 1.0;
-constexpr double kRestMinS = 1.5;      // random rest between steps, so the operator cannot anticipate
-constexpr double kRestMaxS = 2.5;
-constexpr int kStepRepetitions = 2;    // each of the 6 directions this many times per trial
-constexpr double kTrialLeadInS = 3.0;  // still hold before the first step (baseline)
-constexpr int kMaxSteps = 6 * kStepRepetitions;
+constexpr double kRestMinS = 1.5;      // random rest between pushes, so the operator cannot anticipate
+constexpr double kRestMaxS = 2.0;
+constexpr int kAxialSteps = 6;         // +-x, +-y, +-z
+constexpr int kDiagonalSteps = 6;      // drawn from the 12 diagonals of the xy, xz and yz planes
+constexpr int kStepRepetitions = 2;    // rotation trials: each of the 6 directions this many times
+constexpr double kTrialLeadInS = 2.0;  // still hold before the first push (baseline)
+constexpr int kMaxSteps = kAxialSteps + kDiagonalSteps;
+static_assert(kMaxSteps == 6 * kStepRepetitions, "rotation and translation trials share the plan array");
 // Rotation trials: K_r about all three axes during the trial (blended from and back to the holding value)
 // The slave's orientation law uses the quaternion vector part, sin(angle / 2): for small angles the torque per rad is
 // half the gain, so the effective rotational K_r is kRotationTrialStiffness / 2 (written to trials.csv).
@@ -115,16 +122,15 @@ constexpr double kRotationRampS = 0.6;
 constexpr double kRotationHoldS = 1.5;
 constexpr double kRotationStiffnessBlendS = 0.5;  // lead-in is 3 s, so the blend ends before the first step
 
-// --udp mode
-constexpr int kUdpOffsetPort = 50900;
+// MOSAIC mode
+constexpr int kUdpCommandPort = 50900;
 constexpr int kUdpStatePort = 50910;
 constexpr const char* kUdpStateHost = "127.0.0.1";
-constexpr double kUdpMaxOffsetM = 0.02;
-constexpr double kUdpOffsetRateMps = 0.1;
-constexpr double kUdpTimeoutS = 0.25;
+constexpr double kFitCode = 9.0;
+constexpr int kStateDecimation = 10;  // 1 kHz control -> 100 Hz to MOSAIC (it hands every packet to its own task)
 
 // Safety: end the control loop when exceeded
-constexpr double kAbortPositionErrorM = 0.05;
+constexpr double kAbortPositionErrorM = 0.08;  // above the 5 cm push
 constexpr double kAbortSpeedMps = 0.5;
 constexpr double kAbortOrientationErrorRad = 35.0 * kPi / 180.0;  // above the 20 deg step
 constexpr double kAbortAngularSpeedRadps = 2.0;
@@ -298,9 +304,12 @@ class MotionGenerator {
 // ---- Step schedule ----
 struct StepPlan {
   double onset_s;
-  int axis;  // 0..2 translation along x, y, z; 3..5 rotation about x, y, z
+  int axis;  // 0..2 translation along x, y, z; 3..5 rotation about x, y, z; 6 diagonal translation
   double sign;
+  std::array<double, 3> direction;  // unit vector of a translation step
 };
+
+constexpr int kDiagonalAxis = 6;
 
 enum Phase : int { kIdle = 0, kRest = 1, kRampUp = 2, kHold = 3, kRampDown = 4 };
 
@@ -346,10 +355,38 @@ double step_profile(double t, double onset, bool rotation, Phase* phase) {
 
 std::vector<StepPlan> make_plan(std::mt19937& rng, bool rotation) {
   std::vector<StepPlan> plan;
-  for (int r = 0; r < kStepRepetitions; ++r) {
+  if (rotation) {
+    for (int r = 0; r < kStepRepetitions; ++r) {
+      for (int axis = 0; axis < 3; ++axis) {
+        plan.push_back({0.0, axis + 3, 1.0, {0.0, 0.0, 0.0}});
+        plan.push_back({0.0, axis + 3, -1.0, {0.0, 0.0, 0.0}});
+      }
+    }
+  } else {
     for (int axis = 0; axis < 3; ++axis) {
-      plan.push_back({0.0, axis + (rotation ? 3 : 0), 1.0});
-      plan.push_back({0.0, axis + (rotation ? 3 : 0), -1.0});
+      for (const double sign : {1.0, -1.0}) {
+        std::array<double, 3> direction{0.0, 0.0, 0.0};
+        direction[axis] = sign;
+        plan.push_back({0.0, axis, sign, direction});
+      }
+    }
+    std::vector<std::array<double, 3>> diagonals;
+    const double c = 1.0 / std::sqrt(2.0);
+    for (int a = 0; a < 3; ++a) {
+      for (int b = a + 1; b < 3; ++b) {
+        for (const double sa : {c, -c}) {
+          for (const double sb : {c, -c}) {
+            std::array<double, 3> direction{0.0, 0.0, 0.0};
+            direction[a] = sa;
+            direction[b] = sb;
+            diagonals.push_back(direction);
+          }
+        }
+      }
+    }
+    std::shuffle(diagonals.begin(), diagonals.end(), rng);
+    for (int i = 0; i < kDiagonalSteps; ++i) {
+      plan.push_back({0.0, kDiagonalAxis, 1.0, diagonals[i]});
     }
   }
   std::shuffle(plan.begin(), plan.end(), rng);
@@ -362,8 +399,37 @@ std::vector<StepPlan> make_plan(std::mt19937& rng, bool rotation) {
   return plan;
 }
 
+bool is_rotation(const StepPlan& step) {
+  return step.axis >= 3 && step.axis <= 5;
+}
+
+std::string step_name(const StepPlan& step) {
+  static const char* kAxisNames = "xyz";
+  std::string name;
+  if (is_rotation(step)) {
+    return std::string(step.sign > 0 ? "+r" : "-r") + kAxisNames[step.axis - 3];
+  }
+  for (int i = 0; i < 3; ++i) {
+    if (step.direction[i] != 0.0) {
+      name += (step.direction[i] > 0 ? "+" : "-");
+      name += kAxisNames[i];
+    }
+  }
+  return name;
+}
+
+std::string label_for_code(double code) {
+  if (code < -0.5) {
+    return "empty";
+  }
+  if (std::abs(code) < 1e-9) {
+    return "relaxed";
+  }
+  return "effort" + std::to_string(static_cast<int>(std::lround(code * 100.0)));
+}
+
 double trial_duration(const std::array<StepPlan, kMaxSteps>& plan) {
-  const bool rotation = plan[0].axis >= 3;
+  const bool rotation = is_rotation(plan[0]);
   return plan[kMaxSteps - 1].onset_s + 2.0 * ramp_s(rotation) + hold_s(rotation) + kRestMinS;
 }
 
@@ -381,6 +447,7 @@ struct LogRecord {
   double wrench[6];      // O_F_ext_hat_K
   double velocity[3];
   double desired_rotation[3];  // equilibrium orientation offset from home, rotation vector in the base frame, rad
+  double direction[3];         // unit vector of the current translation step
 };
 
 constexpr std::size_t kLogCapacity = 1 << 15;
@@ -413,16 +480,14 @@ std::string default_log_dir() {
 int main(int argc, char** argv) {
   std::string log_dir = default_log_dir();
   std::string robot_ip = "169.254.105.210";
-  bool udp_mode = true;
+  bool console_mode = false;
   bool usage_error = false;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
     if (arg == "--out" && i + 1 < argc) {
       log_dir = argv[++i];
     } else if (arg == "--console") {
-      udp_mode = false;
-    } else if (arg == "--udp") {
-      udp_mode = true;
+      console_mode = true;
     } else if (i == 1 && arg.rfind("--", 0) != 0) {
       robot_ip = arg;
     } else {
@@ -445,7 +510,7 @@ int main(int argc, char** argv) {
   }
   std::fprintf(robot_file,
                "t_s,trial,step,phase,axis,sign,xd,yd,zd,x,y,z,qw,qx,qy,qz,"
-               "fx,fy,fz,mx,my,mz,vx,vy,vz,rdx,rdy,rdz\n");
+               "fx,fy,fz,mx,my,mz,vx,vy,vz,rdx,rdy,rdz,dirx,diry,dirz\n");
   std::fprintf(trial_file,
                "trial,label,start_s,end_s,start_unix_s,end_unix_s,completed,k_robot_n_per_m,step_m,ramp_s,hold_s,"
                "kind,k_robot_nm_per_rad,step_rad\n");
@@ -460,46 +525,29 @@ int main(int argc, char** argv) {
   std::atomic<int> abort_reason{kNone};
   std::atomic<bool> control_running{false};
 
-  // --udp: latest offset command (control callback reads it) and the state socket (writer thread)
-  std::array<std::atomic<double>, 3> udp_target{};
-  std::atomic<double> udp_target_time{-1.0};
+  std::atomic<int> current_step{-1};  // step of the running trial (control callback), -1 between trials
+
+  // MOSAIC mode: trial starts from the Effort card (port 50900), state to MOSAIC (writer thread)
+  int command_socket = -1;
   int state_socket = -1;
   sockaddr_in state_address{};
-  std::thread udp_thread;
-  if (udp_mode) {
-    const int offset_socket = socket(AF_INET, SOCK_DGRAM, 0);
+  if (!console_mode) {
+    command_socket = socket(AF_INET, SOCK_DGRAM, 0);
     state_socket = socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in listen_address{};
     listen_address.sin_family = AF_INET;
     listen_address.sin_addr.s_addr = htonl(INADDR_ANY);
-    listen_address.sin_port = htons(kUdpOffsetPort);
+    listen_address.sin_port = htons(kUdpCommandPort);
     state_address.sin_family = AF_INET;
     state_address.sin_port = htons(kUdpStatePort);
     inet_pton(AF_INET, kUdpStateHost, &state_address.sin_addr);
     timeval timeout{0, 200000};
-    if (offset_socket < 0 || state_socket < 0 ||
-        setsockopt(offset_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
-        bind(offset_socket, reinterpret_cast<sockaddr*>(&listen_address), sizeof(listen_address)) != 0) {
+    if (command_socket < 0 || state_socket < 0 ||
+        setsockopt(command_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
+        bind(command_socket, reinterpret_cast<sockaddr*>(&listen_address), sizeof(listen_address)) != 0) {
       std::perror("udp sockets");
       return 1;
     }
-    udp_thread = std::thread([&, offset_socket]() {
-      double values[6];
-      while (!g_stop_requested) {
-        const ssize_t n = recv(offset_socket, values, sizeof(values), 0);
-        if (n < static_cast<ssize_t>(3 * sizeof(double))) {
-          continue;  // timeout or short packet
-        }
-        if (!std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2])) {
-          continue;
-        }
-        for (int i = 0; i < 3; ++i) {
-          udp_target[i].store(std::clamp(values[i], -kUdpMaxOffsetM, kUdpMaxOffsetM));
-        }
-        udp_target_time.store(elapsed_seconds(clock_start));
-      }
-      close(offset_socket);
-    });
   }
 
   std::thread writer_thread([&]() {
@@ -509,22 +557,24 @@ int main(int argc, char** argv) {
       std::size_t tail = log_ring->tail.load(std::memory_order_relaxed);
       for (; tail < head; ++tail) {
         const LogRecord& r = log_ring->records[tail % kLogCapacity];
-        if (state_socket >= 0) {
-          const double packet[15] = {r.t, r.position[0], r.position[1], r.position[2], r.desired[0], r.desired[1],
+        if (state_socket >= 0 && tail % kStateDecimation == 0) {
+          const double packet[17] = {r.t, r.position[0], r.position[1], r.position[2], r.desired[0], r.desired[1],
                                      r.desired[2], r.wrench[0], r.wrench[1], r.wrench[2], r.quaternion[0],
                                      r.quaternion[1], r.quaternion[2], r.quaternion[3],
-                                     kRobotTranslationalStiffness};
+                                     kRobotTranslationalStiffness, static_cast<double>(r.phase),
+                                     static_cast<double>(r.trial)};
           sendto(state_socket, packet, sizeof(packet), 0, reinterpret_cast<const sockaddr*>(&state_address),
                  sizeof(state_address));
         }
         std::fprintf(robot_file,
                      "%.4f,%d,%d,%d,%d,%.0f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
-                     "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.6f,%.6f,%.6f\n",
+                     "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.6f,%.6f,%.6f,%.3f,%.3f,%.3f\n",
                      r.t, r.trial, r.step, r.phase, r.axis, r.sign, r.desired[0], r.desired[1], r.desired[2],
                      r.position[0], r.position[1], r.position[2], r.quaternion[0], r.quaternion[1],
                      r.quaternion[2], r.quaternion[3], r.wrench[0], r.wrench[1], r.wrench[2], r.wrench[3],
                      r.wrench[4], r.wrench[5], r.velocity[0], r.velocity[1], r.velocity[2], r.desired_rotation[0],
-                     r.desired_rotation[1], r.desired_rotation[2]);
+                     r.desired_rotation[1], r.desired_rotation[2], r.direction[0], r.direction[1],
+                     r.direction[2]);
       }
       log_ring->tail.store(tail, std::memory_order_release);
       std::fflush(robot_file);
@@ -536,71 +586,117 @@ int main(int argc, char** argv) {
     std::fclose(robot_file);
   });
 
-  // Console: one trial per label. Runs until "q", Ctrl+C or the end of the control loop.
+  // One trial: plan, start, print each push, wait for its end, write its trials.csv row. Called from one thread
+  // only (the MOSAIC thread, or the console thread with --console).
+  std::mt19937 rng(static_cast<uint32_t>(std::time(nullptr)));
+  int trial = 0;
+  auto run_trial = [&](const std::string& label) {
+    const bool rotation = label.rfind("rot_", 0) == 0;
+    const std::vector<StepPlan> steps = make_plan(rng, rotation);
+    std::copy(steps.begin(), steps.end(), plan.begin());
+    ++trial;
+    const double start_s = elapsed_seconds(clock_start);
+    const double start_unix = unix_seconds();
+    std::cout << "\n[TRIAL " << trial << "] " << label << ": " << steps.size()
+              << (rotation ? " rotation steps of " + std::to_string(static_cast<int>(kRotationStepRad * 180.0 / kPi)) +
+                                 " deg"
+                           : " pushes of " + std::to_string(static_cast<int>(kStepAmplitudeM * 100.0)) + " cm")
+              << ", about " << static_cast<int>(trial_duration(plan)) << " s. Hold the state, do not react.\n"
+              << std::flush;
+    // Stored after the plan is copied; the control callback reads it with a seq_cst load before the plan.
+    requested_trial.store(trial);
+
+    int printed = -1;
+    while (!g_stop_requested && finished_trial.load() < trial) {
+      const int step = current_step.load();
+      if (step > printed) {
+        std::cout << "  " << (rotation ? "step " : "push ") << step + 1 << "/" << steps.size() << ": "
+                  << step_name(plan[step]) << '\n'
+                  << std::flush;
+        printed = step;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    const bool completed = finished_trial.load() >= trial;
+    std::fprintf(trial_file, "%d,%s,%.4f,%.4f,%.3f,%.3f,%d,%.1f,%.4f,%.3f,%.3f,%s,%.1f,%.4f\n", trial,
+                 label.c_str(), start_s, elapsed_seconds(clock_start), start_unix, unix_seconds(), completed ? 1 : 0,
+                 kRobotTranslationalStiffness, kStepAmplitudeM, ramp_s(rotation), hold_s(rotation),
+                 rotation ? "rotation" : "translation",
+                 0.5 * (rotation ? kRotationTrialStiffness : kRobotRotationalStiffness),
+                 rotation ? kRotationStepRad : 0.0);
+    std::fflush(trial_file);
+    std::cout << "[TRIAL " << trial << "] " << (completed ? "done." : "stopped.") << '\n' << std::flush;
+  };
+
+  // MOSAIC: one trial per Start capture of the Effort card.
+  std::thread mosaic_thread;
+  if (!console_mode) {
+    mosaic_thread = std::thread([&]() {
+      bool announced = false;
+      double code = 0.0;
+      while (!g_stop_requested) {
+        if (!control_running.load()) {
+          while (recv(command_socket, &code, sizeof(code), MSG_DONTWAIT) > 0) {
+          }  // starts sent before the robot holds the handle
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          continue;
+        }
+        if (!announced) {
+          std::cout << "\n[PERTURBATION] Ready. Start each trial in MOSAIC: Effort card, select the state, Start "
+                       "capture. Type q + Enter to quit.\n"
+                    << std::flush;
+          announced = true;
+        }
+        const ssize_t n = recv(command_socket, &code, sizeof(code), 0);
+        if (n < static_cast<ssize_t>(sizeof(double)) || !std::isfinite(code)) {
+          continue;  // timeout or short packet
+        }
+        if (code >= kFitCode - 0.5) {
+          std::cout << "[MOSAIC] fit: no pushes.\n" << std::flush;
+          continue;
+        }
+        run_trial(label_for_code(code));
+        while (recv(command_socket, &code, sizeof(code), MSG_DONTWAIT) > 0) {
+          std::cout << "[MOSAIC] a start during the trial was ignored.\n" << std::flush;
+        }
+      }
+    });
+  }
+
+  // Console: "q" quits; with --console also one trial per label.
   std::thread console_thread([&]() {
-    std::mt19937 rng(static_cast<uint32_t>(std::time(nullptr)));
-    int trial = 0;
     while (!g_stop_requested) {
       if (!control_running.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         continue;
       }
-      std::cout << "\nLabel for trial " << trial + 1 << " (Enter = start, q = quit): " << std::flush;
-
-      std::string label;
+      if (console_mode) {
+        std::cout << "\nLabel for trial " << trial + 1 << " (Enter = start, q = quit): " << std::flush;
+      }
+      std::string line;
       while (!g_stop_requested) {
         fd_set input;
         FD_ZERO(&input);
         FD_SET(STDIN_FILENO, &input);
         timeval wait{0, 200000};
         if (select(STDIN_FILENO + 1, &input, nullptr, nullptr, &wait) > 0) {
-          std::getline(std::cin, label);
+          std::getline(std::cin, line);
           break;
         }
       }
       if (g_stop_requested) {
         break;
       }
-      if (label == "q") {
+      if (line == "q") {
         g_stop_requested = 1;
         break;
       }
-      if (udp_mode) {
-        std::cout << "MOSAIC drives the perturbations (start with --console for console trials); type q to quit.\n";
-        continue;
-      }
-      if (label.empty()) {
-        label = "trial";
-      }
-
-      const bool rotation = label.rfind("rot_", 0) == 0;
-      const std::vector<StepPlan> steps = make_plan(rng, rotation);
-      std::copy(steps.begin(), steps.end(), plan.begin());
-      ++trial;
-      const double start_s = elapsed_seconds(clock_start);
-      const double start_unix = unix_seconds();
-      std::cout << "[TRIAL " << trial << "] " << label << ": " << steps.size() << (rotation ? " rotation" : "")
-                << " steps, about " << static_cast<int>(trial_duration(plan))
-                << " s. Hold the handle, do not react to the steps.\n"
-                << std::flush;
-      // Stored after the plan is copied; the control callback reads it with a seq_cst load before the plan.
-      requested_trial.store(trial);
-
-      while (!g_stop_requested && finished_trial.load() < trial) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      }
-      std::fprintf(trial_file, "%d,%s,%.4f,%.4f,%.3f,%.3f,%d,%.1f,%.4f,%.3f,%.3f,%s,%.1f,%.4f\n", trial,
-                   label.c_str(), start_s, elapsed_seconds(clock_start), start_unix, unix_seconds(),
-                   finished_trial.load() >= trial ? 1 : 0, kRobotTranslationalStiffness, kStepAmplitudeM,
-                   ramp_s(rotation), hold_s(rotation), rotation ? "rotation" : "translation",
-                   0.5 * (rotation ? kRotationTrialStiffness : kRobotRotationalStiffness),
-                   rotation ? kRotationStepRad : 0.0);
-      std::fflush(trial_file);
-      if (!g_stop_requested) {
-        std::cout << "[TRIAL " << trial << "] done.\n";
+      if (console_mode) {
+        run_trial(line.empty() ? "trial" : line);
+      } else {
+        std::cout << "Type q + Enter to quit. Trials start from MOSAIC (Effort card).\n" << std::flush;
       }
     }
-    std::fclose(trial_file);
   });
 
   try {
@@ -609,13 +705,9 @@ int main(int argc, char** argv) {
     std::cerr << "[FRANKA] Connected.\n";
     setDefaultBehavior(robot);
 
-    if (udp_mode) {
-      std::cout << "[PERTURBATION] MOSAIC mode: offsets on port " << kUdpOffsetPort << " (clamped to +-"
-                << kUdpMaxOffsetM * 1000 << " mm), state to " << kUdpStateHost << ":" << kUdpStatePort << '\n';
-    }
-    std::cout << "[PERTURBATION] K_r=" << kRobotTranslationalStiffness << " N/m | steps +-" << kStepAmplitudeM * 1000
-              << " mm, hold " << kStepHoldS << " s | rot_ trials: K_r=" << 0.5 * kRotationTrialStiffness
-              << " Nm/rad, steps +-" << kRotationStepRad * 180.0 / kPi << " deg | logs in " << log_dir << '\n'
+    std::cout << "[PERTURBATION] " << (console_mode ? "console trials" : "trials started from MOSAIC (port 50900)")
+              << " | K_r=" << kRobotTranslationalStiffness << " N/m | 12 pushes of " << kStepAmplitudeM * 100
+              << " cm per trial | logs in " << log_dir << '\n'
               << "WARNING: Franka will move to the initial pose. Do not hold the handle during this move. "
               << "Keep emergency stop accessible. Press Enter to continue..." << std::endl;
     std::cin.get();
@@ -644,7 +736,6 @@ int main(int argc, char** argv) {
     int active_trial = 0;
     double trial_time = 0.0;
     int step_index = 0;
-    Eigen::Vector3d udp_offset = Eigen::Vector3d::Zero();  // rate-limited toward the MOSAIC command
 
     control_running.store(true);
     robot.control([&](const franka::RobotState& state, franka::Duration period) -> franka::Torques {
@@ -684,31 +775,22 @@ int main(int argc, char** argv) {
         if (step_index + 1 < kMaxSteps && trial_time >= plan[step_index + 1].onset_s) {
           ++step_index;
         }
-        const double profile = step_profile(trial_time, plan[step_index].onset_s, plan[0].axis >= 3, &phase);
-        const int axis = plan[step_index].axis;
-        if (axis < 3) {
-          offset[axis] = plan[step_index].sign * kStepAmplitudeM * profile;
+        const double profile = step_profile(trial_time, plan[step_index].onset_s, is_rotation(plan[0]), &phase);
+        const StepPlan& step = plan[step_index];
+        if (is_rotation(step)) {
+          rotation_offset[step.axis - 3] = step.sign * kRotationStepRad * profile;
         } else {
-          rotation_offset[axis - 3] = plan[step_index].sign * kRotationStepRad * profile;
+          offset = kStepAmplitudeM * profile * Eigen::Vector3d(step.direction[0], step.direction[1], step.direction[2]);
         }
+        current_step.store(step_index);
         if (trial_time >= trial_duration(plan)) {
+          current_step.store(-1);
           finished_trial.store(active_trial);
           active_trial = 0;
           offset.setZero();
           rotation_offset.setZero();
           phase = kIdle;
         }
-      }
-      if (udp_mode) {
-        Eigen::Vector3d target = Eigen::Vector3d::Zero();
-        const double command_time = udp_target_time.load();
-        if (command_time >= 0.0 && elapsed_seconds(clock_start) - command_time < kUdpTimeoutS) {
-          target = Eigen::Vector3d(udp_target[0].load(), udp_target[1].load(), udp_target[2].load());
-        }
-        for (int i = 0; i < 3; ++i) {
-          udp_offset[i] += std::clamp(target[i] - udp_offset[i], -kUdpOffsetRateMps * dt, kUdpOffsetRateMps * dt);
-        }
-        offset = udp_offset;
       }
       const Eigen::Vector3d desired_position = home_position + offset;
       // Rotation about a base-frame axis through the end-effector point.
@@ -718,7 +800,7 @@ int main(int argc, char** argv) {
             Eigen::Quaterniond(Eigen::AngleAxisd(rotation_offset.norm(), rotation_offset.normalized())) *
             home_orientation;
       }
-      const bool rotation_trial = active_trial != 0 && plan[0].axis >= 3;
+      const bool rotation_trial = active_trial != 0 && is_rotation(plan[0]);
       const double k_rotational_target = rotation_trial ? kRotationTrialStiffness : kRobotRotationalStiffness;
       const double blend_rate = (kRobotRotationalStiffness - kRotationTrialStiffness) / kRotationStiffnessBlendS;
       k_rotational += std::clamp(k_rotational_target - k_rotational, -blend_rate * dt, blend_rate * dt);
@@ -784,6 +866,7 @@ int main(int argc, char** argv) {
         record.position[i] = position[i];
         record.velocity[i] = cartesian_velocity[i];
         record.desired_rotation[i] = rotation_offset[i];
+        record.direction[i] = active_trial != 0 ? plan[step_index].direction[i] : 0.0;
       }
       record.quaternion[0] = orientation.w();
       record.quaternion[1] = orientation.x();
@@ -821,12 +904,16 @@ int main(int argc, char** argv) {
   }
 
   console_thread.join();
-  if (udp_thread.joinable()) {
-    udp_thread.join();
+  if (mosaic_thread.joinable()) {
+    mosaic_thread.join();
   }
+  std::fclose(trial_file);
   writer_thread.join();
   if (state_socket >= 0) {
     close(state_socket);
+  }
+  if (command_socket >= 0) {
+    close(command_socket);
   }
   if (log_ring->dropped.load() > 0) {
     std::cerr << "[LOG] " << log_ring->dropped.load() << " robot samples dropped (writer too slow)\n";

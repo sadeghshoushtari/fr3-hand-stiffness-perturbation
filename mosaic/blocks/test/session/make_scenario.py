@@ -7,7 +7,8 @@ Writes to <out_dir>:
                            posture quaternions) and the hand stiffness at the handle (model + empty-handle stiffness)
   calibration.json, run.json   mosaic/session_*.json with the model and log paths moved to <windows_out_dir>
   actions_calibration.txt, actions_run.txt   card presses for the pipeline runner (test/replay)
-Calibration: empty handle, relaxed, three efforts, then fit; phases of the calibration mounting (biceps phase rises
+Calibration: empty handle, relaxed, three efforts (Effort start capture; the perturbation program runs the pushes and
+the trial ends with them), then fit; phases of the calibration mounting (biceps phase rises
 15 deg per unit sigma from -48.7 deg, triceps falls 10 deg per unit sigma from 149.2 deg). Run: a new mounting
 (relaxed -30 / 160 deg, both directions reversed), set with the Session trigger (relaxed, then tense), then 60 %
 effort at the session posture and at a second posture from the IMUs.
@@ -26,7 +27,7 @@ from stiffness_model import StiffnessModel  # noqa: E402
 TRUTH = {"biceps": (0.01, 0.12), "triceps": (0.01, 0.08), "elbow_flexors": (0.008, 0.10), "shoulder": (0.01, 0.04)}
 K_EMPTY = [[40.0, 5.0, 0.0], [5.0, 35.0, 0.0], [0.0, 0.0, 60.0]]
 LEVELS = {"empty": None, "relaxed": (0.0, 0.0), "effort30": (0.3, 0.2), "effort60": (0.6, 0.7), "effort100": (1.0, 1.0)}
-TRIAL_S, GAP_S, FIRST_S = 35.0, 4.0, 4.0
+TRIAL_S, GAP_S, FIRST_S = 62.0, 4.0, 4.0  # a trial of perturbation.cpp takes about 58 s
 # robot offset, robot state, slave command: moved for the test (Windows reserves ranges around 50900 on some PCs and
 # IPsec uses 4500)
 PORTS = {50900: 51900, 50910: 51910, 4500: 51500}
@@ -79,8 +80,7 @@ def main():
     windows, actions, t = [], [], FIRST_S
     for label, code in (("empty", -1), ("relaxed", 0), ("effort30", 0.3), ("effort60", 0.6), ("effort100", 1)):
         windows.append(window(t - GAP_S / 2, t + TRIAL_S + GAP_S / 2, label, calib_mount))
-        actions += [f"{t:.1f} capture Effort {label}", f"{t + 0.5:.1f} start PerturbationPlan",
-                    f"{t + TRIAL_S:.1f} stop Effort"]
+        actions += [f"{t:.1f} capture Effort {label}", f"{t + TRIAL_S:.1f} stop Effort"]
         t += TRIAL_S + GAP_S
     actions += [f"{t:.1f} capture Effort fit", f"{t + 1:.1f} stop Effort"]
     calib_end = t + 4.0
@@ -93,7 +93,7 @@ def main():
               {"t0": 36.0, "t1": 44.0, "posture": [20.0, 70.0], "sigma": LEVELS["effort60"]}]
 
     (out / "scenario.json").write_text(json.dumps({
-        "truth": TRUTH, "k_empty": K_EMPTY, "robot_ports": [PORTS[50900], PORTS[50910]], "slave_port": PORTS[4500], "k_robot": 1000.0, "home": [0.45, 0.0, 0.40],
+        "truth": TRUTH, "k_empty": K_EMPTY, "robot_ports": [PORTS[50900], PORTS[50910]], "slave_port": PORTS[4500],
         "calibration": {"windows": windows, "end_s": calib_end},
         "run": {"windows": run, "end_s": 48.0, "checks": checks}}, indent=1))
     (out / "actions_calibration.txt").write_text("\n".join(actions) + "\n")

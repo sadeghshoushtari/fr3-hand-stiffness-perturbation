@@ -8,44 +8,47 @@ measured by the robot, next to what the wearable sensor reads.
 
 ## Method
 
-The robot holds the handle with a known Cartesian impedance (K_r = 1000 N/m on x, y and z) and shifts its
-equilibrium point by small steps. When nobody holds the handle, it follows each step completely. When a hand holds
+The perturbation protocol is the one of J. Zeynalli's thesis (calibration phase): the robot holds the handle with a
+known Cartesian impedance (K_r = 500 N/m on x, y and z, his value) and pushes the hand by 5 cm in random directions,
+returning to the start between pushes. When nobody holds the handle, it follows each push completely. When a hand holds
 it, the handle moves only part of the way, because the hand pushes back. At rest the two springs balance:
 
     K_h dx = K_r (dx_d - dx)
 
-dx_d is the commanded step and dx is how far the handle actually moved. Twelve steps per trial (+x, -x, +y, -y, +z,
--z, twice each, in shuffled order) give a 3x3 stiffness matrix K_h by least squares.
+dx_d is the commanded push and dx is how far the handle actually moved. Twelve pushes per trial (the 6 axial
+directions +x, -x, +y, -y, +z, -z and 6 diagonals drawn at random from the 12 diagonals of the xy, xz and yz planes,
+in shuffled order) give a 3x3 stiffness matrix K_h by least squares.
 
 A second, independent estimate uses the FR3's own estimate of the external force (`O_F_ext_hat_K`, from its joint
 torque sensors): K = -dF/dx. On the FR3 this estimate is the wrench the robot applies to the hand (first lab run,
 2026-11-12), so the analysis uses its negative. A trial recorded with nobody holding the handle (`empty`) is subtracted per direction to
 remove errors of the robot's dynamics model. No force/torque sensor is needed.
 
-Step timing (relative to the robot's home pose):
+Push timing (relative to the robot's home pose), about 58 s per trial:
 
 | Part     | Duration                  | Equilibrium point                    |
 |----------|---------------------------|--------------------------------------|
-| Lead-in  | 3 s                       | home                                 |
-| Ramp up  | 0.15 s (raised cosine)    | home to home + 15 mm along one axis  |
-| Hold     | 1 s                       | home + 15 mm                         |
-| Ramp down| 0.15 s                    | back to home                         |
-| Rest     | random 1.5-2.5 s          | home                                 |
+| Lead-in  | 2 s                       | home                                 |
+| Push out | 1 s (raised cosine)       | home to home + 5 cm in one direction |
+| Hold     | 1 s                       | home + 5 cm                          |
+| Return   | 1 s                       | back to home                         |
+| Rest     | random 1.5-2 s            | home                                 |
 
-The random rests stop the operator from anticipating the next step.
+The random rests stop the operator from anticipating the next push. At 5 cm the robot force stays below 25 N, under
+the 35 N collision threshold of the slave.
 
 **Rotation trials.** A trial whose label starts with `rot_` turns the handle instead: the equilibrium orientation is
 rotated by +-20 deg about the x, y and z axes of the base frame through the end-effector point, twice each, with
 0.6 s ramps and a 1.5 s hold (slower than the shifts, to keep the wrist joints well below their speed guard), while
-the position stays held at 1000 N/m. For these trials the rotational stiffness of the
+the position stays held at 500 N/m. For these trials the rotational stiffness of the
 robot is lowered from 40 to 10 Nm/rad (blended over 0.5 s at the start and end of the trial), so the hand takes a
 measurable share of each turn; at most about 3.5 Nm acts on the hand. The orientation law is the slave's (quaternion
 vector part), whose torque for small angles is half its gain: the gains are 80 and 20, the effective stiffnesses 40
 and 10 Nm/rad, and trials.csv records the effective value. The same two estimates give the 3x3 rotational stiffness
 in Nm/rad, with the handle's rotation vector for dx and the moments of `O_F_ext_hat_K` for F; `rot_empty` is the
-empty trial of the rotation steps. A trial lasts about 40-45 s and the operator keeps
-one muscle state for the whole trial (for example relaxed, or co-contracting lightly, medium or strongly). With a hand
-stiffness of 300-1500 N/m the handle moves 6-11.5 mm of each 15 mm step and the hand feels 3.5-9 N.
+empty trial of the rotation steps (console trials only). The operator keeps one muscle state for the whole trial (for
+example relaxed, or co-contracting at about 30, 60 or 100 %). With a hand stiffness of 300-1500 N/m the handle moves
+1.25-3 cm of each 5 cm push and the hand feels 9-19 N.
 
 ## Hardware
 
@@ -97,13 +100,15 @@ and lets MOSAIC switch the exciter (Vibrator card, port 50601).
 Terminal 2, robot:
 
 ```bash
-./perturbation                               # MOSAIC drives the perturbations; robot 169.254.105.210 unless an IP is given
+./perturbation                               # trials started from MOSAIC; robot 169.254.105.210 unless an IP is given
 ./perturbation --console                     # trials typed in this console instead
 ```
 
 1. The program connects and asks you to press Enter. The robot then moves to the home pose. **Do not hold the handle
    during this move** and keep the emergency stop in reach.
-2. The robot holds the handle at home. Type a label for the operator's state and press Enter to run one trial.
+2. The robot holds the handle at home. By default each trial starts from MOSAIC (Effort card, Start capture; see
+   `mosaic/SESSION_PIPELINES.md`) and the console only takes `q`. With `--console`, type a label for the operator's
+   state and press Enter to run one trial; the steps below are for that mode.
 3. The first trial should be `empty`, with nobody touching the handle. It is the first, safe check of the motion and is
    needed for the force-based estimate.
 4. Then the operator holds the handle, for example: `relaxed`, `cocontract_light`, `cocontract_medium`,
@@ -112,7 +117,7 @@ Terminal 2, robot:
    (`rot_relaxed`, `rot_cocontract_light`, ...).
 6. `q` quits. Ctrl+C stops the robot at once.
 
-Safety stops (the control loop ends): handle more than 50 mm or 35 deg from the equilibrium pose, handle faster than
+Safety stops (the control loop ends): handle more than 8 cm or 35 deg from the equilibrium pose, handle faster than
 0.5 m/s or 2 rad/s, or a joint above 85 % of a conservative velocity limit. The libfranka collision reflex (35 N) also
 stops the robot: biceps and triceps trials need a small, steady pull or push (about 10 N), not a strong one. The robot is not driven home after a stop; the next run moves
 it home first.
@@ -121,8 +126,9 @@ it home first.
 
 `perturbation` writes to `perturbation_logs/<date_time>/`:
 
-- `robot.csv`, 1 kHz: time, trial, step, schedule phase, step axis (0-2 translation, 3-5 rotation) and sign,
-  equilibrium point, handle position and orientation, `O_F_ext_hat_K`, handle velocity, equilibrium rotation offset.
+- `robot.csv`, 1 kHz: time, trial, step, schedule phase, step axis (0-2 translation, 3-5 rotation, 6 diagonal) and
+  sign, equilibrium point, handle position and orientation, `O_F_ext_hat_K`, handle velocity, equilibrium rotation
+  offset, unit vector of the push.
 - `trials.csv`: label, start and end of each trial (program clock and Unix time), whether it completed, kind
   (translation or rotation) and the robot stiffness used.
 
@@ -184,15 +190,16 @@ add it to MOSAIC and for the checks (the C# block reproduces the Python model to
 pipeline over UDP).
 
 The whole session can also run in MOSAIC (`mosaic/session_calibration.json`, `mosaic/session_run.json`): the
-`PerturbationCalibration` block drives `perturbation` through a Stimulus block, identifies the stiffness per
-trial, fits the model and writes `stiffness_projection.json` (format 2: the block evaluates the arm geometry itself,
+Effort card starts each trial of `perturbation`, the `PerturbationCalibration` block identifies the stiffness per
+trial from the pushes in the robot state, fits the model and writes `stiffness_projection.json` (format 2: the block evaluates the arm geometry itself,
 so the posture can come from IMUs); in the run pipeline a Session trigger sets the relaxed reference and the index
 direction of each mounting. Step-by-step use: `mosaic/SESSION_PIPELINES.md`.
 
 ## Status
 
 The robot program shares its home pose, default behaviour, motion generator, damping law, nullspace term, torque-rate
-limit, collision thresholds and joint-velocity limits with the teleoperation slave of the same project. So far it has
-been tested only against a simulated stand-in for libfranka (a 3 kg point mass held by a simulated hand of 800 / 400 /
-250 N/m): the analysis recovered 802 / 401 / 250 N/m from positions and 800 / 401 / 249 N/m from forces. The first run
-on the real FR3 starts with the `empty` trial.
+limit, collision thresholds and joint-velocity limits with the teleoperation slave of the same project. The 5 cm
+protocol has been tested against a simulated stand-in for libfranka (`mosaic/blocks/test/robot_stub`: a 3 kg handle
+held by a simulated hand of 800 / 600 / 1000 N/m with 100 N/m coupling): `analyze_perturbation.py` recovered the hand
+stiffness to 0.1 N/m, and the session test runs it inside the MOSAIC calibration pipeline. The first run on the real
+FR3 starts with the `empty` trial.

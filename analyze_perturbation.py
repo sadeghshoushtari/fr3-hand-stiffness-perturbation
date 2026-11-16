@@ -1,9 +1,11 @@
 """Hand stiffness per trial from a perturbation.cpp log, next to the elastography features of the same trial.
 
-  python analyze_perturbation.py <log_dir> [--hold 0.6 1.1] [--sensors <laptop_dir>/sensors_laptop.csv]
+  python analyze_perturbation.py <log_dir> [--hold <from> <to>] [--sensors <laptop_dir>/sensors_laptop.csv]
 
 For every trial (trials.csv) the steps are cut from robot.csv (step onset = first ramp-up sample), dx_d and dx are
-taken as hold-window mean minus pre-window mean, and two 3x3 estimates are fitted:
+taken as hold-window mean minus pre-window mean (hold window: from ramp + 0.45 s to ramp + hold - 0.05 s after the
+onset, from the trial's ramp_s and hold_s; 0.6-1.1 s for the 15 mm steps, 1.45-1.95 s for the 5 cm pushes), and two
+3x3 estimates are fitted:
   spring : K_h dx = K_r (dx_d - dx), from positions and the commanded K_r only
   wrench : K = -dF/dx, F = -O_F_ext_hat_K (force of the hand on the robot); a trial labelled "empty" (nobody
            holding) is subtracted per direction
@@ -88,6 +90,9 @@ def trial_steps(robot, trial, hold_s, rotation=False):
         f = -np.column_stack([robot[c][sel] for c in ("fx", "fy", "fz")])
     axis = robot["axis"][sel]
     sign = robot["sign"][sel]
+    # unit vector of the step (logs from 11-16 on; diagonal pushes have axis 6)
+    unit = (np.column_stack([robot[c][sel] for c in ("dirx", "diry", "dirz")])
+            if "dirx" in robot.dtype.names else np.zeros((t.size, 3)))
     out = []
     for s in np.unique(step[step >= 0]):
         idx = np.flatnonzero((step == s) & (phase == RAMP_UP))
@@ -98,7 +103,7 @@ def trial_steps(robot, trial, hold_s, rotation=False):
         for name, y in (("dx_d", xd), ("dx", x), ("df", f)):
             d[name] = window(t, y, onset + hold_s[0], onset + hold_s[1]) - window(t, y, onset + PRE_S[0],
                                                                                   onset + PRE_S[1])
-        d["direction"] = (int(axis[idx[0]]), int(sign[idx[0]]))
+        d["direction"] = (int(axis[idx[0]]), int(sign[idx[0]]), *np.round(unit[idx[0]], 2).tolist())
         out.append(d)
     return out, (t[0], t[-1]) if t.size else (np.nan, np.nan)
 
@@ -127,7 +132,8 @@ def sensor_summary(sensors, t0, t1):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("log_dir", type=Path)
-    ap.add_argument("--hold", type=float, nargs=2, default=(0.6, 1.1), help="hold window after step onset, s")
+    ap.add_argument("--hold", type=float, nargs=2, default=None,
+                    help="hold window after step onset, s (default from the trial's ramp and hold)")
     ap.add_argument("--sensors", type=Path, help="laptop sensor log (laptop_sensor_logger.py) instead of sensors.csv")
     ap.add_argument("--robot-clock-offset", type=float, default=0.0, help="lab PC clock minus internet time, s")
     ap.add_argument("--trim", type=float, default=3.0, help="s cut from both ends of a trial for the sensor mean")
@@ -157,7 +163,10 @@ def main():
         # rotation steps have a longer ramp and hold: from 0.7 s after the ramp to just before the ramp down
         if tr["kind"] == "rotation":
             return float(tr["ramp_s"]) + 0.7, float(tr["ramp_s"]) + float(tr["hold_s"]) - 0.05
-        return args.hold
+        if args.hold is not None:
+            return args.hold
+        ramp, hold = float(tr.get("ramp_s") or 0.15), float(tr.get("hold_s") or 1.0)
+        return ramp + 0.45, ramp + hold - 0.05
 
     steps = {int(tr["trial"]): trial_steps(robot, int(tr["trial"]), hold_window(tr), tr["kind"] == "rotation")
              for tr in trials}

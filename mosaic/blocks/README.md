@@ -60,9 +60,9 @@ sigma biceps, sigma triceps (0 = relaxed, 1 = strongest calibration trial, cappe
 a usable phase: values of the last valid packet).
 
 `PerturbationCalibration` (Params: model file to write, then `key:value` options, see the header of
-`PerturbationCalibration.cs`): inputs ESP32 features, Robot state (15 doubles from `perturbation.cpp`),
-LoadCell, IMU, the Stimulus (PerturbationPlan) and the Effort trigger (codes -1 empty, 0 relaxed, 0..1 effort,
-9 fit). Output per trial: trial, code, cycles, K entries; after the fit: -1, 9, trials, (a, b) per group. The trials
+`PerturbationCalibration.cs`): inputs ESP32 features, Robot state (17 doubles from `perturbation.cpp`, with the push
+phase and trial number that define the cycles and the end of a trial), LoadCell, IMU and the Effort trigger (codes -1
+empty, 0 relaxed, 0..1 effort, 9 fit). A Stimulus block can drive the cycles instead (`plan:` input). Output per trial: trial, code, cycles, K entries; after the fit: -1, 9, trials, (a, b) per group. The trials
 and the fit are also written to `calibration_<date_time>.json` in the block's `Path`.
 
 ## Checks
@@ -78,7 +78,8 @@ All run without the robot. On the development laptop the C# projects are built w
   (parameters to 1e-6), the identification, and the trial identification of the calibration with the force from the
   robot spring and from the FR3 wrench.
 - `test/replay/`: `MosaicPipelineRunner` runs a pipeline JSON without the GUI and presses card buttons at given times.
-- `test/session/run_session_test.sh`: both session pipelines in MOSAIC against a simulated operator, board, robot and
-  IMUs with known model parameters (`make_scenario.py`, `simulate_session.py`); `check_session.py` compares the
+- `test/session/run_session_test.sh`: both session pipelines in MOSAIC against a simulated operator, board and IMUs
+  with known model parameters, with `perturbation.cpp` built against the libfranka stub `test/robot_stub` (handle mass
+  and hand spring) running the pushes (`make_scenario.py`, `simulate_session.py`); `check_session.py` compares the
   identified stiffness, the session reference, the fit (with `StiffnessModel.fit` on the same trials) and the live
   output (with `mosaic_export` on the same packets, at the session posture and at an IMU posture).

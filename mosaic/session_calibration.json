@@ -29,31 +29,16 @@
     "Type": "Trigger",
     "Params": ["empty:-1", "relaxed:0", "effort30:0.3", "effort60:0.6", "effort100:1", "fit:9"]
   },
-  "Clock": {
-    "Type": "Clock",
-    "DesiredRate": 100
-  },
-  "PerturbationPlan": {
-    "Type": "Stimulus",
-    "Inputs": ["Clock"],
-    "DesiredRate": 100,
-    "Params": [1.0, "+x:0.015;0;0;0;0;0", "-x:-0.015;0;0;0;0;0", "+y:0;0.015;0;0;0;0", "-y:0;-0.015;0;0;0;0", "+z:0;0;0.015;0;0;0", "-z:0;0;-0.015;0;0;0"],
-    "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
-  },
-  "PlanVector": {
-    "Type": "Selector",
-    "Inputs": ["PerturbationPlan"]
-  },
   "Robot": {
     "Type": "UDPClient",
-    "Inputs": ["PlanVector"],
+    "Inputs": ["Effort"],
     "Params": [50910, "double", "127.0.0.1", 50900],
-    "DesiredRate": 1000,
+    "DesiredRate": 100,
     "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   },
   "Calibration": {
     "Type": "PerturbationCalibration",
-    "Inputs": ["ESP32", "Robot", "LoadCell", "IMU", "PerturbationPlan", "Effort"],
+    "Inputs": ["ESP32", "Robot", "LoadCell", "IMU", "Effort"],
     "Params": ["/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;0;90", "axes:xyz"],
     "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   }

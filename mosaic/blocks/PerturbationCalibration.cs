@@ -11,14 +11,15 @@ namespace MOSAIC.Models.Elastography;
 
 /// <summary>
 /// Perturbation calibration of the projection model inside MOSAIC (see <see cref="PerturbationCalibrationCore"/>):
-/// identifies the hand stiffness per trial from the perturbation program's state, records the elastography phases,
+/// identifies the hand stiffness per trial from the perturbation program's state (pushes and their phases), records the
+/// elastography phases,
 /// and on "fit" fits the model and writes the model file that StiffnessProjection reads.
 /// </summary>
 /// <example>
 /// <code>
 /// "Calibration": {
 ///   "Type": "PerturbationCalibration",
-///   "Inputs": [ "ESP32", "Robot", "LoadCell", "IMU", "PerturbationPlan", "Effort" ],
+///   "Inputs": [ "ESP32", "Robot", "LoadCell", "IMU", "Effort" ],
 ///   "Params": [ "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;0;90" ],
 ///   "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
 /// }
@@ -29,9 +30,11 @@ namespace MOSAIC.Models.Elastography;
 ///   posture:fixed;&lt;upper arm deg&gt;;&lt;elbow deg&gt; | posture:imu;&lt;upper arm deg&gt;;&lt;elbow deg&gt;
 ///       (imu: trial posture from the IMU input, the angles are the session posture written to the model file)
 ///   axes:xyz (Cartesian axes fitted), arm:0.30;0.27;0.07 (upper arm, forearm, hand in m), index:phase|speed2,
-///   drive_hz:45, spacing_m:0.02, lag_offset_deg:0, single:biceps|triceps, settle_s:1, min_cycles:3
+///   drive_hz:45, spacing_m:0.02, lag_offset_deg:0, single:biceps|triceps, settle_s:1 (rest settling),
+///   capture_settle_s:0.5 (hold settling), min_cycles:3
 ///   esp32:, robot:, loadcell:, imu:, plan:, effort: names of the input blocks (defaults ESP32, Robot, LoadCell, IMU,
 ///   PerturbationPlan, Effort).
+/// The cycles come from the phase in the robot state (perturbation.cpp); a Stimulus block (plan:) can drive them instead.
 /// Output per finished trial: Vector [trial, code, cycles, kxx, kyy, kzz, kxy, kxz, kyz] (K zeros if not identified);
 /// after a fit: Vector [-1, 9, trials, a_1, b_1, ..., a_4, b_4].
 /// </example>
@@ -84,6 +87,7 @@ public sealed class PerturbationCalibration : BaseBlock
                 case "lag_offset_deg": opt.LagOffsetDeg = Num(value); break;
                 case "single": opt.SingleIndex = value; break;
                 case "settle_s": opt.RestSettleS = Num(value); break;
+                case "capture_settle_s": opt.CaptureSettleS = Num(value); break;
                 case "min_cycles": opt.MinCycles = (int)Num(value); break;
                 default:
                     if (_roles.ContainsKey(key)) _roles[key] = value;
