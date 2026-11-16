@@ -69,7 +69,8 @@ stiffness of 300-1500 N/m the handle moves 6-11.5 mm of each 15 mm step and the 
 | `stiffness_identification.py` | anywhere | The two stiffness fits used by the analysis. |
 | `mosaic/*.json` | MOSAIC | Online pipelines from sensor features to the stiffness command (see below). |
 | `projection/` | anywhere | Muscle-space arm model, its per-session fit to the measured stiffness, and the export for MOSAIC. Needs numpy and scipy. |
-| `mosaic/blocks/` | MOSAIC | C# block `StiffnessProjection` that runs the fitted model live, and its checks. |
+| `mosaic/session_*.json` | MOSAIC | End-to-end session pipelines: perturbation calibration and teleoperation run (see `mosaic/SESSION_PIPELINES.md`). |
+| `mosaic/blocks/` | MOSAIC | C# blocks `StiffnessProjection` (fitted model live) and `PerturbationCalibration` (calibration inside MOSAIC), and their checks. |
 
 ## Build
 
@@ -85,17 +86,18 @@ The sensor board is plugged into the robot PC by USB. Your user needs access to 
 Terminal 1, sensors:
 
 ```bash
-python3 robot_pc_sensor_logger.py            # options: --port /dev/ttyUSB0 --out <dir>
+python3 robot_pc_sensor_logger.py            # options: --port /dev/ttyUSB0 --out <dir> --udp 127.0.0.1:50500 --commands 50601
 ```
 
 Type `on` and Enter to start the exciter, `off` to stop it, `q` to quit (the exciter is always switched off on exit).
 Every 2 s it prints the four amplitudes and the phase of each pair, and warns if a channel reads exactly zero (usually
-a loose sensor cable).
+a loose sensor cable). `--udp` also forwards every feature line to MOSAIC as the board's UDP packet, `--commands`
+lets MOSAIC switch the exciter (Vibrator card).
 
 Terminal 2, robot:
 
 ```bash
-./perturbation_test <robot-ip>               # option: --out <dir>
+./perturbation_test <robot-ip>               # options: --out <dir>, --udp (MOSAIC drives the perturbations)
 ```
 
 1. The program connects and asks you to press Enter. The robot then moves to the home pose. **Do not hold the handle
@@ -179,6 +181,12 @@ pipeline `mosaic/elastography_projection.json`) reads the second file and output
 stiffness in N/m (K_xx ... K_yz, volume), the two indices and a valid flag; see `mosaic/blocks/README.md` for how to
 add it to MOSAIC and for the checks (the C# block reproduces the Python model to 1e-12, also through a MOSAIC
 pipeline over UDP).
+
+The whole session can also run in MOSAIC (`mosaic/session_calibration.json`, `mosaic/session_run.json`): the
+`PerturbationCalibration` block drives `perturbation_test --udp` through a Stimulus block, identifies the stiffness per
+trial, fits the model and writes `stiffness_projection.json` (format 2: the block evaluates the arm geometry itself,
+so the posture can come from IMUs); in the run pipeline a Session trigger sets the relaxed reference and the index
+direction of each mounting. Step-by-step use: `mosaic/SESSION_PIPELINES.md`.
 
 ## Status
 

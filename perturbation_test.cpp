@@ -13,10 +13,16 @@
 //
 // Build: g++ -std=c++17 -O2 -Wall -Wextra perturbation_test.cpp -I/usr/include/eigen3 -o perturbation_test
 //            -lfranka -pthread
-// Usage: perturbation_test <franka-ip> [--out <dir>]      (default log dir perturbation_logs/<date_time>)
+// Usage: perturbation_test <franka-ip> [--out <dir>] [--udp]      (default log dir perturbation_logs/<date_time>)
 //
 // Console: type a label for the operator's state (e.g. empty, relaxed, cocontract_medium; rot_empty, rot_relaxed for
 // rotation steps) and press Enter to run one trial; "q" quits. Ctrl+C stops the robot at once.
+//
+// --udp: MOSAIC drives the perturbations (mosaic/session_calibration.json) instead of the console trials. The
+// equilibrium offset comes as 6 doubles (dx, dy, dz in m, rx, ry, rz in rad; the rotations are ignored) on UDP port
+// 50900; each axis is clamped to +-20 mm, the offset follows the command at most 0.1 m/s and returns to zero when no
+// packet came for 0.25 s. The robot state goes to 127.0.0.1:50910 at 1 kHz as 15 doubles: t, x, y, z, x_d, y_d, z_d,
+// F_ext x, y, z (O_F_ext_hat_K), q_w, q_x, q_y, q_z, K_r. The console then only takes "q".
 //
 // Files: robot.csv (1 kHz), trials.csv (label, start and end of each trial, also as Unix time).
 //
@@ -42,7 +48,10 @@
 #include <thread>
 #include <vector>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <Eigen/Dense>
@@ -102,6 +111,14 @@ constexpr double kRotationStepRad = 20.0 * kPi / 180.0;  // at most about 3.5 Nm
 constexpr double kRotationRampS = 0.6;
 constexpr double kRotationHoldS = 1.5;
 constexpr double kRotationStiffnessBlendS = 0.5;  // lead-in is 3 s, so the blend ends before the first step
+
+// --udp mode
+constexpr int kUdpOffsetPort = 50900;
+constexpr int kUdpStatePort = 50910;
+constexpr const char* kUdpStateHost = "127.0.0.1";
+constexpr double kUdpMaxOffsetM = 0.02;
+constexpr double kUdpOffsetRateMps = 0.1;
+constexpr double kUdpTimeoutS = 0.25;
 
 // Safety: end the control loop when exceeded
 constexpr double kAbortPositionErrorM = 0.05;
@@ -391,12 +408,24 @@ std::string default_log_dir() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 2 && !(argc == 4 && std::string(argv[2]) == "--out")) {
-    std::cerr << "Usage: " << argv[0] << " <franka-ip> [--out <dir>]\n";
+  std::string log_dir = default_log_dir();
+  bool udp_mode = false;
+  bool usage_error = argc < 2;
+  for (int i = 2; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--out" && i + 1 < argc) {
+      log_dir = argv[++i];
+    } else if (arg == "--udp") {
+      udp_mode = true;
+    } else {
+      usage_error = true;
+    }
+  }
+  if (usage_error) {
+    std::cerr << "Usage: " << argv[0] << " <franka-ip> [--out <dir>] [--udp]\n";
     return 1;
   }
   const std::string robot_ip = argv[1];
-  const std::string log_dir = argc == 4 ? argv[3] : default_log_dir();
 
   std::signal(SIGINT, sigint_handler);
 
@@ -424,6 +453,48 @@ int main(int argc, char** argv) {
   std::atomic<int> abort_reason{kNone};
   std::atomic<bool> control_running{false};
 
+  // --udp: latest offset command (control callback reads it) and the state socket (writer thread)
+  std::array<std::atomic<double>, 3> udp_target{};
+  std::atomic<double> udp_target_time{-1.0};
+  int state_socket = -1;
+  sockaddr_in state_address{};
+  std::thread udp_thread;
+  if (udp_mode) {
+    const int offset_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    state_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in listen_address{};
+    listen_address.sin_family = AF_INET;
+    listen_address.sin_addr.s_addr = htonl(INADDR_ANY);
+    listen_address.sin_port = htons(kUdpOffsetPort);
+    state_address.sin_family = AF_INET;
+    state_address.sin_port = htons(kUdpStatePort);
+    inet_pton(AF_INET, kUdpStateHost, &state_address.sin_addr);
+    timeval timeout{0, 200000};
+    if (offset_socket < 0 || state_socket < 0 ||
+        setsockopt(offset_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
+        bind(offset_socket, reinterpret_cast<sockaddr*>(&listen_address), sizeof(listen_address)) != 0) {
+      std::perror("udp sockets");
+      return 1;
+    }
+    udp_thread = std::thread([&, offset_socket]() {
+      double values[6];
+      while (!g_stop_requested) {
+        const ssize_t n = recv(offset_socket, values, sizeof(values), 0);
+        if (n < static_cast<ssize_t>(3 * sizeof(double))) {
+          continue;  // timeout or short packet
+        }
+        if (!std::isfinite(values[0]) || !std::isfinite(values[1]) || !std::isfinite(values[2])) {
+          continue;
+        }
+        for (int i = 0; i < 3; ++i) {
+          udp_target[i].store(std::clamp(values[i], -kUdpMaxOffsetM, kUdpMaxOffsetM));
+        }
+        udp_target_time.store(elapsed_seconds(clock_start));
+      }
+      close(offset_socket);
+    });
+  }
+
   std::thread writer_thread([&]() {
     while (true) {
       const bool stopping = g_stop_requested && !control_running.load();
@@ -431,6 +502,14 @@ int main(int argc, char** argv) {
       std::size_t tail = log_ring->tail.load(std::memory_order_relaxed);
       for (; tail < head; ++tail) {
         const LogRecord& r = log_ring->records[tail % kLogCapacity];
+        if (state_socket >= 0) {
+          const double packet[15] = {r.t, r.position[0], r.position[1], r.position[2], r.desired[0], r.desired[1],
+                                     r.desired[2], r.wrench[0], r.wrench[1], r.wrench[2], r.quaternion[0],
+                                     r.quaternion[1], r.quaternion[2], r.quaternion[3],
+                                     kRobotTranslationalStiffness};
+          sendto(state_socket, packet, sizeof(packet), 0, reinterpret_cast<const sockaddr*>(&state_address),
+                 sizeof(state_address));
+        }
         std::fprintf(robot_file,
                      "%.4f,%d,%d,%d,%d,%.0f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
                      "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.5f,%.5f,%.5f,%.6f,%.6f,%.6f\n",
@@ -479,6 +558,10 @@ int main(int argc, char** argv) {
         g_stop_requested = 1;
         break;
       }
+      if (udp_mode) {
+        std::cout << "MOSAIC drives the perturbations (--udp); type q to quit.\n";
+        continue;
+      }
       if (label.empty()) {
         label = "trial";
       }
@@ -519,6 +602,10 @@ int main(int argc, char** argv) {
     std::cerr << "[FRANKA] Connected.\n";
     setDefaultBehavior(robot);
 
+    if (udp_mode) {
+      std::cout << "[PERTURBATION] --udp: offsets from MOSAIC on port " << kUdpOffsetPort << " (clamped to +-"
+                << kUdpMaxOffsetM * 1000 << " mm), state to " << kUdpStateHost << ":" << kUdpStatePort << '\n';
+    }
     std::cout << "[PERTURBATION] K_r=" << kRobotTranslationalStiffness << " N/m | steps +-" << kStepAmplitudeM * 1000
               << " mm, hold " << kStepHoldS << " s | rot_ trials: K_r=" << 0.5 * kRotationTrialStiffness
               << " Nm/rad, steps +-" << kRotationStepRad * 180.0 / kPi << " deg | logs in " << log_dir << '\n'
@@ -550,6 +637,7 @@ int main(int argc, char** argv) {
     int active_trial = 0;
     double trial_time = 0.0;
     int step_index = 0;
+    Eigen::Vector3d udp_offset = Eigen::Vector3d::Zero();  // rate-limited toward the MOSAIC command
 
     control_running.store(true);
     robot.control([&](const franka::RobotState& state, franka::Duration period) -> franka::Torques {
@@ -603,6 +691,17 @@ int main(int argc, char** argv) {
           rotation_offset.setZero();
           phase = kIdle;
         }
+      }
+      if (udp_mode) {
+        Eigen::Vector3d target = Eigen::Vector3d::Zero();
+        const double command_time = udp_target_time.load();
+        if (command_time >= 0.0 && elapsed_seconds(clock_start) - command_time < kUdpTimeoutS) {
+          target = Eigen::Vector3d(udp_target[0].load(), udp_target[1].load(), udp_target[2].load());
+        }
+        for (int i = 0; i < 3; ++i) {
+          udp_offset[i] += std::clamp(target[i] - udp_offset[i], -kUdpOffsetRateMps * dt, kUdpOffsetRateMps * dt);
+        }
+        offset = udp_offset;
       }
       const Eigen::Vector3d desired_position = home_position + offset;
       // Rotation about a base-frame axis through the end-effector point.
@@ -715,7 +814,13 @@ int main(int argc, char** argv) {
   }
 
   console_thread.join();
+  if (udp_thread.joinable()) {
+    udp_thread.join();
+  }
   writer_thread.join();
+  if (state_socket >= 0) {
+    close(state_socket);
+  }
   if (log_ring->dropped.load() > 0) {
     std::cerr << "[LOG] " << log_ring->dropped.load() << " robot samples dropped (writer too slow)\n";
   }

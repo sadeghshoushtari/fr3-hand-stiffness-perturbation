@@ -1,0 +1,60 @@
+{
+  "ESP32": {
+    "Type": "UDPClient",
+    "Params": [50500, "double"],
+    "DesiredRate": 5,
+    "Path": "/home/f_airob/mosaic_logs/calibration/"
+  },
+  "Vibrator": {
+    "Type": "CommandSender",
+    "Params": ["127.0.0.1", "50601"]
+  },
+  "IMUControl": {
+    "Type": "CommandSender",
+    "Params": ["192.168.0.10", "5000"]
+  },
+  "IMU": {
+    "Type": "UDPClient",
+    "Params": [50700, "float"],
+    "DesiredRate": 100,
+    "Path": "/home/f_airob/mosaic_logs/calibration/"
+  },
+  "LoadCell": {
+    "Type": "UDPClient",
+    "Params": [50800, "double"],
+    "DesiredRate": 1000,
+    "Path": "/home/f_airob/mosaic_logs/calibration/"
+  },
+  "Effort": {
+    "Type": "Trigger",
+    "Params": ["empty:-1", "relaxed:0", "effort30:0.3", "effort60:0.6", "effort100:1", "fit:9"]
+  },
+  "Clock": {
+    "Type": "Clock",
+    "DesiredRate": 100
+  },
+  "PerturbationPlan": {
+    "Type": "Stimulus",
+    "Inputs": ["Clock"],
+    "DesiredRate": 100,
+    "Params": [1.0, "+x:0.015;0;0;0;0;0", "-x:-0.015;0;0;0;0;0", "+y:0;0.015;0;0;0;0", "-y:0;-0.015;0;0;0;0", "+z:0;0;0.015;0;0;0", "-z:0;0;-0.015;0;0;0"],
+    "Path": "/home/f_airob/mosaic_logs/calibration/"
+  },
+  "PlanVector": {
+    "Type": "Selector",
+    "Inputs": ["PerturbationPlan"]
+  },
+  "Robot": {
+    "Type": "UDPClient",
+    "Inputs": ["PlanVector"],
+    "Params": [50910, "double", "127.0.0.1", 50900],
+    "DesiredRate": 1000,
+    "Path": "/home/f_airob/mosaic_logs/calibration/"
+  },
+  "Calibration": {
+    "Type": "PerturbationCalibration",
+    "Inputs": ["ESP32", "Robot", "LoadCell", "IMU", "PerturbationPlan", "Effort"],
+    "Params": ["/home/f_airob/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;0;90", "axes:xyz"],
+    "Path": "/home/f_airob/mosaic_logs/calibration/"
+  }
+}

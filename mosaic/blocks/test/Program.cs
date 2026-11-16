@@ -7,7 +7,9 @@ using MOSAIC.Models.Elastography;
 // dotnet run -- <dir with <case>_model.json, _features.csv, _expected.csv> <case> [<case> ...]
 // Runs the packets through StiffnessProjectionModel and compares every output value with the Python reference.
 // Stiffness entries: relative error (to max(|expected|, 1 N/m)); sigmas and flags: absolute error. Exit 1 on a miss.
-const double Tol = 1e-9;
+// Format-2 models evaluate the geometry in C# and in Python separately, both by finite differences (H agrees to about
+// 1e-6), so they are compared at 1e-3; format 1 carries the geometry in the file and must agree to rounding.
+const double Tol = 1e-9, TolFormat2 = 1e-3;
 var dir = args[0];
 bool ok = true;
 foreach (var name in args.Skip(1))
@@ -28,7 +30,7 @@ foreach (var name in args.Skip(1))
         }
         valid += got[^1] == 1.0 ? 1 : 0;
     }
-    bool pass = worst <= Tol;
+    bool pass = worst <= (model.Format == StiffnessProjectionModel.Format2 ? TolFormat2 : Tol);
     ok &= pass;
     Console.WriteLine($"{name}: {features.Length} packets, {valid} valid, largest error {worst:E2} (packet {worstRow}) "
                       + (pass ? "PASS" : "FAIL"));

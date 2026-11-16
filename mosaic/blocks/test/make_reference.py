@@ -8,6 +8,7 @@ by packet, the reference of the block):
   speed2  the prior model with a 45 Hz wave-speed index on synthetic packets: wave speeds 1.5-12 m/s through the
           20 mm pair, random phases, packets without phase (0, 0) and short vectors
   phase   the same packets with the phase index, single index on the biceps
+  v2      model file format 2 (geometry evaluated by the block, own arm lengths and posture, index direction per pair)
 """
 import argparse
 import csv
@@ -22,6 +23,7 @@ sys.path.insert(0, str(next(p / "projection" for p in Path(__file__).resolve().p
                             if (p / "projection" / "mosaic_export.py").exists())))
 import mosaic_export as mx  # noqa: E402
 from fit_model_from_perturbation import session_posture  # noqa: E402
+from arm_model import ArmModel  # noqa: E402
 from stiffness_model import PRIOR, StiffnessModel  # noqa: E402
 
 
@@ -80,6 +82,13 @@ def main():
                "scale": scale, "relaxed_phase_deg": {"biceps": relaxed, "triceps": relaxed + 10.0}}
         data = mx.export(model, idx, posture, out / f"{case}_model.json")
         write(out, case, data, packets)
+    # format 2: arm lengths + posture instead of the geometry, both indices with their own direction
+    arm_model = StiffnessModel(ArmModel(0.32, 0.26, 0.08), params=model.params)
+    idx = {"kind": "phase", "drive_hz": 45.0, "spacing_m": 0.02, "lag_offset_deg": 0.0, "single_index": None,
+           "scale": {"biceps": 40.0, "triceps": 25.0}, "relaxed_phase_deg": {"biceps": -48.7, "triceps": 149.2},
+           "direction": {"biceps": 1.0, "triceps": -1.0}, "posture": {"upper_arm_deg": 15.0, "elbow_deg": 75.0}}
+    data = mx.export_v2(arm_model, idx, out / "v2_model.json")
+    write(out, "v2", data, packets)
 
 
 if __name__ == "__main__":

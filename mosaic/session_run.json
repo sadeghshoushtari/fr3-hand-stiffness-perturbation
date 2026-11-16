@@ -1,0 +1,54 @@
+{
+  "ESP32": {
+    "Type": "UDPClient",
+    "Params": [50500, "double"],
+    "DesiredRate": 5,
+    "Path": "/home/f_airob/mosaic_logs/run/"
+  },
+  "Vibrator": {
+    "Type": "CommandSender",
+    "Params": ["127.0.0.1", "50601"]
+  },
+  "IMUControl": {
+    "Type": "CommandSender",
+    "Params": ["192.168.0.10", "5000"]
+  },
+  "IMU": {
+    "Type": "UDPClient",
+    "Params": [50700, "float"],
+    "DesiredRate": 100,
+    "Path": "/home/f_airob/mosaic_logs/run/"
+  },
+  "Session": {
+    "Type": "Trigger",
+    "Params": ["relaxed:0", "tense:1"]
+  },
+  "Stiffness": {
+    "Type": "StiffnessProjection",
+    "Inputs": ["ESP32", "IMU", "Session"],
+    "Params": ["/home/f_airob/mosaic_models/stiffness_projection.json", "imu:IMU", "session:Session"],
+    "DesiredRate": 5,
+    "Path": "/home/f_airob/mosaic_logs/run/"
+  },
+  "StiffnessVolume": {
+    "Type": "Projector",
+    "Inputs": ["Stiffness"],
+    "Params": ["6"]
+  },
+  "SafeRange": {
+    "Type": "Function",
+    "Inputs": ["StiffnessVolume"],
+    "Params": ["clip", 50, 800]
+  },
+  "ToSlave": {
+    "Type": "UDPClient",
+    "Inputs": ["SafeRange"],
+    "Params": [50511, "double", "127.0.0.1", 4500],
+    "Path": "/home/f_airob/mosaic_logs/run/"
+  },
+  "ToMonitor": {
+    "Type": "UDPClient",
+    "Inputs": ["Stiffness"],
+    "Params": [50512, "double", "127.0.0.1", 50510]
+  }
+}

@@ -8,6 +8,9 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../StiffnessProjectionModel.cs" />
+    <Compile Include="../ArmModel.cs" />
     <Compile Remove="replay/**" />
+    <Compile Remove="arm/**" />
+    <Compile Remove="fit/**" />
   </ItemGroup>
 </Project>

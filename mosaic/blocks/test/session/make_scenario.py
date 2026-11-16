@@ -1,0 +1,112 @@
+"""Scenario of the headless session test (run_session_test.sh): a virtual operator with known model parameters.
+
+python make_scenario.py <out_dir> <windows_out_dir>
+
+Writes to <out_dir>:
+  scenario.json            what simulate_session.py plays: per time window the operator state (sigmas, pair phases,
+                           posture quaternions) and the hand stiffness at the handle (model + empty-handle stiffness)
+  calibration.json, run.json   mosaic/session_*.json with the model and log paths moved to <windows_out_dir>
+  actions_calibration.txt, actions_run.txt   card presses for the pipeline runner (test/replay)
+Calibration: empty handle, relaxed, three efforts, then fit; phases of the calibration mounting (biceps phase rises
+15 deg per unit sigma from -48.7 deg, triceps falls 10 deg per unit sigma from 149.2 deg). Run: a new mounting
+(relaxed -30 / 160 deg, both directions reversed), set with the Session trigger (relaxed, then tense), then 60 %
+effort at the session posture and at a second posture from the IMUs.
+"""
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "projection"))
+from arm_model import ArmModel  # noqa: E402
+from fit_model_from_perturbation import session_posture  # noqa: E402
+from stiffness_model import StiffnessModel  # noqa: E402
+
+TRUTH = {"biceps": (0.01, 0.12), "triceps": (0.01, 0.08), "elbow_flexors": (0.008, 0.10), "shoulder": (0.01, 0.04)}
+K_EMPTY = [[40.0, 5.0, 0.0], [5.0, 35.0, 0.0], [0.0, 0.0, 60.0]]
+LEVELS = {"empty": None, "relaxed": (0.0, 0.0), "effort30": (0.3, 0.2), "effort60": (0.6, 0.7), "effort100": (1.0, 1.0)}
+TRIAL_S, GAP_S, FIRST_S = 35.0, 4.0, 4.0
+# robot offset, robot state, slave command: moved for the test (Windows reserves ranges around 50900 on some PCs and
+# IPsec uses 4500)
+PORTS = {50900: 51900, 50910: 51910, 4500: 51500}
+REPO = Path(__file__).resolve().parents[4]
+
+
+def quat(r):
+    """Rotation matrix -> unit quaternion (w, x, y, z), Shepperd's method."""
+    tr = np.trace(r)
+    if tr > 0:
+        s = 2 * np.sqrt(tr + 1)
+        q = [0.25 * s, (r[2, 1] - r[1, 2]) / s, (r[0, 2] - r[2, 0]) / s, (r[1, 0] - r[0, 1]) / s]
+    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
+        s = 2 * np.sqrt(1 + r[0, 0] - r[1, 1] - r[2, 2])
+        q = [(r[2, 1] - r[1, 2]) / s, 0.25 * s, (r[0, 1] + r[1, 0]) / s, (r[0, 2] + r[2, 0]) / s]
+    elif r[1, 1] > r[2, 2]:
+        s = 2 * np.sqrt(1 + r[1, 1] - r[0, 0] - r[2, 2])
+        q = [(r[0, 2] - r[2, 0]) / s, (r[0, 1] + r[1, 0]) / s, 0.25 * s, (r[1, 2] + r[2, 1]) / s]
+    else:
+        s = 2 * np.sqrt(1 + r[2, 2] - r[0, 0] - r[1, 1])
+        q = [(r[1, 0] - r[0, 1]) / s, (r[0, 2] + r[2, 0]) / s, (r[1, 2] + r[2, 1]) / s, 0.25 * s]
+    return [float(v) for v in q]
+
+
+def posture_quats(p):
+    c, s = np.cos(p.elbow_angle), np.sin(p.elbow_angle)
+    fa = p.upper_arm @ np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    return quat(p.upper_arm) + quat(fa)
+
+
+def main():
+    out, win = Path(sys.argv[1]), sys.argv[2].rstrip("\\/")
+    out.mkdir(parents=True, exist_ok=True)
+    arm = ArmModel(0.30, 0.27, 0.07)
+    truth = StiffnessModel(arm, params=TRUTH)
+    home = session_posture(0.0, 90.0)
+    second = session_posture(20.0, 70.0)
+
+    def window(t0, t1, level, mount, posture=home):
+        sig = LEVELS[level]
+        k = np.array(K_EMPTY)
+        if sig is not None:
+            k = k + truth.cartesian_stiffness(posture, {"biceps": sig[0], "triceps": sig[1]})
+        s = sig or (0.0, 0.0)
+        phase = [mount[0] + mount[1] * s[0], mount[2] + mount[3] * s[1]]
+        return {"t0": t0, "t1": t1, "level": level, "sigma": list(s), "phase_deg": phase, "K_hand": k.tolist(),
+                "imu": posture_quats(posture)}
+
+    calib_mount = (-48.7, 15.0, 149.2, -10.0)
+    windows, actions, t = [], [], FIRST_S
+    for label, code in (("empty", -1), ("relaxed", 0), ("effort30", 0.3), ("effort60", 0.6), ("effort100", 1)):
+        windows.append(window(t - GAP_S / 2, t + TRIAL_S + GAP_S / 2, label, calib_mount))
+        actions += [f"{t:.1f} capture Effort {label}", f"{t + 0.5:.1f} start PerturbationPlan",
+                    f"{t + TRIAL_S:.1f} stop Effort"]
+        t += TRIAL_S + GAP_S
+    actions += [f"{t:.1f} capture Effort fit", f"{t + 1:.1f} stop Effort"]
+    calib_end = t + 4.0
+
+    run_mount = (-30.0, -15.0, 160.0, 10.0)
+    run = [window(0.0, 10.0, "relaxed", run_mount), window(10.0, 18.0, "effort100", run_mount),
+           window(18.0, 32.0, "effort60", run_mount), window(32.0, 46.0, "effort60", run_mount, second)]
+    run_actions = ["4 capture Session relaxed", "9 stop Session", "12 capture Session tense", "17 stop Session"]
+    checks = [{"t0": 22.0, "t1": 30.0, "posture": [0.0, 90.0], "sigma": LEVELS["effort60"]},
+              {"t0": 36.0, "t1": 44.0, "posture": [20.0, 70.0], "sigma": LEVELS["effort60"]}]
+
+    (out / "scenario.json").write_text(json.dumps({
+        "truth": TRUTH, "k_empty": K_EMPTY, "robot_ports": [PORTS[50900], PORTS[50910]], "slave_port": PORTS[4500], "k_robot": 1000.0, "home": [0.45, 0.0, 0.40],
+        "calibration": {"windows": windows, "end_s": calib_end},
+        "run": {"windows": run, "end_s": 48.0, "checks": checks}}, indent=1))
+    (out / "actions_calibration.txt").write_text("\n".join(actions) + "\n")
+    (out / "actions_run.txt").write_text("\n".join(run_actions) + "\n")
+    for name, src in (("calibration", "session_calibration.json"), ("run", "session_run.json")):
+        text = (REPO / "mosaic" / src).read_text()
+        text = text.replace("/home/f_airob/mosaic_models/", win.replace("\\", "/") + "/model/")
+        text = text.replace("/home/f_airob/mosaic_logs/", win.replace("\\", "/") + "/logs/")
+        for port, test_port in PORTS.items():
+            text = text.replace(f"{port}]", f"{test_port}]").replace(f"[{port},", f"[{test_port},")
+        (out / f"{name}.json").write_text(text)
+    print(f"scenario in {out}: calibration {calib_end:.0f} s, run 48 s")
+
+
+if __name__ == "__main__":
+    main()

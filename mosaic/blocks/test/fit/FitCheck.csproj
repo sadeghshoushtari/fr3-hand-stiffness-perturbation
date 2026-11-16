@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Checks StiffnessFit against projection/stiffness_model.py (make_fit_reference.py) and the trial
+       identification of PerturbationCalibrationCore, without MOSAIC. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../ArmModel.cs" />
+    <Compile Include="../../StiffnessProjectionModel.cs" />
+    <Compile Include="../../StiffnessFit.cs" />
+    <Compile Include="../../PerturbationCalibrationCore.cs" />
+  </ItemGroup>
+</Project>
