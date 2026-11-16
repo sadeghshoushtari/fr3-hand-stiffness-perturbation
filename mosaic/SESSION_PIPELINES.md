@@ -17,7 +17,7 @@ slave), which must never run at the same time.
 | Block | Type | Built-in | Role |
 |---|---|---|---|
 | ESP32 | UDPClient | yes | elastography features (12 doubles) from the USB bridge, port 50500 |
-| Vibrator | CommandSender | yes | vibrator on/off: the card's ON/OFF sends text ending in "on"/"off" to the USB bridge, port 50601 |
+| Vibrator | CommandSender | yes | vibrator on/off: Apply to device sends one text per data stream, ending in "on"/"off", to the USB bridge, port 50601; the last one (Magnetometer) decides, so All = on, None = off |
 | IMUControl | CommandSender | yes | starts/stops the lab's ESP IMU nodes (placeholder IP/port until the IMUs are available) |
 | IMU | UDPClient | yes | IMU quaternions, port 50700 (placeholder) |
 | LoadCell | UDPClient | yes | K6D80 + GSV-8DS force/torque, port 50800 (placeholder until its connection is known) |
@@ -75,7 +75,7 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
    `~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/fr3-hand-stiffness-perturbation/mosaic/session_calibration.json`.
    Terminal 3 prints what the Calibration block does.
 4. If the Clock card is not running, press its Start.
-5. Vibrator card: ON. Terminal 1 prints `command ... -> vibrator on`.
+5. Vibrator card: data streams All, then Apply to device (= vibrator on). Terminal 1 prints `command ... -> vibrator on`.
 6. One trial per operator state, in this order: empty, relaxed, effort30, effort60, effort100.
    - empty: nobody touches the handle. Others: the operator holds the handle in the session posture (upper arm
      vertical, elbow 90 deg) and keeps the state (relaxed, or co-contraction at about 30 / 60 / 100 %).
@@ -85,7 +85,7 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
      `trial n (...) done: 6 cycles, K diag ... N/m, phase biceps ... deg, triceps ... deg`.
 7. Effort card: select fit, Start capture, then Stop capture. Terminal 3 prints the relaxed reference, the direction
    of each pair, the fitted parameters and `model written to ...`.
-8. Vibrator card: OFF. Terminal 2: q and Enter. Terminal 1: q and Enter.
+8. Vibrator card: None, then Apply to device (= vibrator off). Terminal 2: q and Enter. Terminal 1: q and Enter.
 
 Model: `mosaic_models/stiffness_projection.json` (the previous one is kept as `.bak`); trials and fit:
 `mosaic_logs/calibration/calibration_<date_time>.json`.
@@ -96,7 +96,7 @@ Model: `mosaic_models/stiffness_projection.json` (the previous one is kept as `.
 2. Teleoperation slave and master as usual (the slave reads the stiffness command on port 4500 once that input is
    added; until then watch the output with
    `python3 ~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/watch_stiffness.py`).
-3. Terminal 3: MOSAIC as above, File -> Open -> `.../fr3-hand-stiffness-perturbation/mosaic/session_run.json`. Vibrator card: ON.
+3. Terminal 3: MOSAIC as above, File -> Open -> `.../fr3-hand-stiffness-perturbation/mosaic/session_run.json`. Vibrator card: All, then Apply to device.
 4. Session card: select relaxed, Start capture, operator relaxes for 5 s, Stop capture.
 5. Session card: select tense, Start capture, operator co-contracts for 5 s, Stop capture. Terminal 3 prints the
    phase change and the direction of each pair; the model file is updated.
