@@ -86,7 +86,7 @@ The sensor board is plugged into the robot PC by USB. Your user needs access to 
 Terminal 1, sensors:
 
 ```bash
-python3 robot_pc_sensor_logger.py            # or ./sensors.sh; options: --port /dev/ttyUSB0 --out <dir> --udp off --commands 0
+python3 robot_pc_sensor_logger.py            # or: sensors (after ./install_commands.sh); options: --port /dev/ttyUSB0 --out <dir> --udp off --commands 0
 ```
 
 Type `on` and Enter to start the exciter, `off` to stop it, `q` to quit (the exciter is always switched off on exit).
@@ -98,7 +98,7 @@ Terminal 2, robot:
 
 ```bash
 ./perturbation_test --console                # trials from this console; robot 169.254.105.210 unless an IP is given
-./robot.sh                                   # MOSAIC drives the perturbations (default mode; builds the program first)
+perturbation                                 # (after ./install_commands.sh) MOSAIC mode, the default; builds the program first
 ```
 
 1. The program connects and asks you to press Enter. The robot then moves to the home pose. **Do not hold the handle
