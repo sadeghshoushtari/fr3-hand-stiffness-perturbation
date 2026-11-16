@@ -60,7 +60,7 @@ sigma biceps, sigma triceps (0 = relaxed, 1 = strongest calibration trial, cappe
 a usable phase: values of the last valid packet).
 
 `PerturbationCalibration` (Params: model file to write, then `key:value` options, see the header of
-`PerturbationCalibration.cs`): inputs ESP32 features, Robot state (15 doubles from `perturbation_test --udp`),
+`PerturbationCalibration.cs`): inputs ESP32 features, Robot state (15 doubles from `perturbation.cpp`),
 LoadCell, IMU, the Stimulus (PerturbationPlan) and the Effort trigger (codes -1 empty, 0 relaxed, 0..1 effort,
 9 fit). Output per trial: trial, code, cycles, K entries; after the fit: -1, 9, trials, (a, b) per group. The trials
 and the fit are also written to `calibration_<date_time>.json` in the block's `Path`.

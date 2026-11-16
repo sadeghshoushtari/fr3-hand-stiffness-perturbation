@@ -3,7 +3,7 @@
   python laptop_sensor_logger.py [--board 192.168.137.50] [--out <dir>] [--max-min 60]
 
 The board stays on the laptop hotspot and sends its features here (UDP 50500). Every packet is written with the
-laptop's Unix time to <out>/sensors_laptop.csv; perturbation_test writes the trial times as Unix time on the robot
+laptop's Unix time to <out>/sensors_laptop.csv; perturbation.cpp writes the trial times as Unix time on the robot
 PC, and analyze_perturbation.py --sensors matches the two by clock time. Both clock offsets to internet time are
 measured (SNTP) at start and end and stored in <out>/clock.json.
 

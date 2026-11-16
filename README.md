@@ -62,8 +62,8 @@ stiffness of 300-1500 N/m the handle moves 6-11.5 mm of each 15 mm step and the 
 
 | File | Runs on | Purpose |
 |---|---|---|
-| `perturbation_test.cpp` | robot PC | The robot program. One self-contained C++17 file (libfranka, Eigen). |
-| `robot_pc_sensor_logger.py` | robot PC | Logs the sensor board over USB with the PC's clock and switches the exciter. Standard library only. |
+| `perturbation.cpp` | robot PC | The robot program. One self-contained C++17 file (libfranka, Eigen). |
+| `sensors.py` | robot PC | Logs the sensor board over USB with the PC's clock and switches the exciter. Standard library only. |
 | `laptop_sensor_logger.py` | another computer | Same, for a board on Wi-Fi when it cannot reach the robot PC. Also measures the clock offset to internet time. |
 | `analyze_perturbation.py` | anywhere | Stiffness per trial from the robot log, matched with the sensor log. Needs numpy and scipy. |
 | `stiffness_identification.py` | anywhere | The two stiffness fits used by the analysis. |
@@ -75,7 +75,7 @@ stiffness of 300-1500 N/m the handle moves 6-11.5 mm of each 15 mm step and the 
 ## Build
 
 ```bash
-g++ -std=c++17 -O2 -Wall -Wextra perturbation_test.cpp -I/usr/include/eigen3 -o perturbation_test -lfranka -pthread
+g++ -std=c++17 -O2 -Wall -Wextra perturbation.cpp -I/usr/include/eigen3 -o perturbation -lfranka -pthread
 ```
 
 ## Run
@@ -86,7 +86,7 @@ The sensor board is plugged into the robot PC by USB. Your user needs access to 
 Terminal 1, sensors:
 
 ```bash
-python3 robot_pc_sensor_logger.py            # or: sensors (after ./install_commands.sh); options: --port /dev/ttyUSB0 --out <dir> --udp off --commands 0
+python3 sensors.py                           # options: --port /dev/ttyUSB0 --out <dir> --udp off --commands 0
 ```
 
 Type `on` and Enter to start the exciter, `off` to stop it, `q` to quit (the exciter is always switched off on exit).
@@ -97,8 +97,8 @@ and lets MOSAIC switch the exciter (Vibrator card, port 50601).
 Terminal 2, robot:
 
 ```bash
-./perturbation_test --console                # trials from this console; robot 169.254.105.210 unless an IP is given
-perturbation                                 # (after ./install_commands.sh) MOSAIC mode, the default; builds the program first
+./perturbation                               # MOSAIC drives the perturbations; robot 169.254.105.210 unless an IP is given
+./perturbation --console                     # trials typed in this console instead
 ```
 
 1. The program connects and asks you to press Enter. The robot then moves to the home pose. **Do not hold the handle
@@ -119,14 +119,14 @@ it home first.
 
 ## Logs
 
-`perturbation_test` writes to `perturbation_logs/<date_time>/`:
+`perturbation` writes to `perturbation_logs/<date_time>/`:
 
 - `robot.csv`, 1 kHz: time, trial, step, schedule phase, step axis (0-2 translation, 3-5 rotation) and sign,
   equilibrium point, handle position and orientation, `O_F_ext_hat_K`, handle velocity, equilibrium rotation offset.
 - `trials.csv`: label, start and end of each trial (program clock and Unix time), whether it completed, kind
   (translation or rotation) and the robot stiffness used.
 
-`robot_pc_sensor_logger.py` writes `perturbation_logs/<date_time>_sensors/sensors.csv`: Unix time and the 12 values of
+`sensors.py` writes `perturbation_logs/<date_time>_sensors/sensors.csv`: Unix time and the 12 values of
 every sensor update.
 
 ## Analysis
@@ -184,7 +184,7 @@ add it to MOSAIC and for the checks (the C# block reproduces the Python model to
 pipeline over UDP).
 
 The whole session can also run in MOSAIC (`mosaic/session_calibration.json`, `mosaic/session_run.json`): the
-`PerturbationCalibration` block drives `perturbation_test --udp` through a Stimulus block, identifies the stiffness per
+`PerturbationCalibration` block drives `perturbation` through a Stimulus block, identifies the stiffness per
 trial, fits the model and writes `stiffness_projection.json` (format 2: the block evaluates the arm geometry itself,
 so the posture can come from IMUs); in the run pipeline a Session trigger sets the relaxed reference and the index
 direction of each mounting. Step-by-step use: `mosaic/SESSION_PIPELINES.md`.

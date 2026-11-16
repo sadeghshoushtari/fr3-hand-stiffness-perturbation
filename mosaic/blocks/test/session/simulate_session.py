@@ -6,7 +6,7 @@ Plays the time windows of scenario.json (make_scenario.py) from its start:
   board   5 Hz, 12 doubles to 127.0.0.1:50500 (esp32_robot_stiffness features; pair phases of the window + 1.5 deg
           noise; [8, 9] triceps cos/sin, [10, 11] biceps)
   IMU     50 Hz, 8 floats to 127.0.0.1:50700 (upper-arm and forearm quaternions of the window's posture)
-  robot   (calibration) perturbation_test --udp: offsets from port 50900 (scenario "robot_ports") (clamped to 20 mm, 0.1 m/s, zero after
+  robot   (calibration) perturbation.cpp: offsets from port 50900 (scenario "robot_ports") (clamped to 20 mm, 0.1 m/s, zero after
           0.25 s without a packet); the handle settles where K_h dx = K_r (dx_d - dx), K_h = the window's hand
           stiffness; 15 doubles of state at 500 Hz to 127.0.0.1:50910
   outputs (run) records the pipeline's output: port 50510 (StiffnessProjection, 10 doubles) and 4500 (stiffness

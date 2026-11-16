@@ -27,7 +27,7 @@ namespace MOSAIC.Models.Elastography;
 /// Fit: K_empty (mean of empty trials) is subtracted; relaxed reference = circular mean of the relaxed trials;
 /// direction per pair = sign of the phase change from relaxed to the strongest trials; index per trial, scale = its
 /// largest value, sigma = max(index, 0) / scale; (a_g, b_g) fitted with <see cref="StiffnessFit.Fit"/>.
-/// Robot state vector (perturbation_test --udp): t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r.
+/// Robot state vector (perturbation.cpp): t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r.
 /// </remarks>
 public sealed class PerturbationCalibrationCore
 {

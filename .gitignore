@@ -1,4 +1,5 @@
 perturbation_test
+perturbation
 perturbation_logs/
 __pycache__/
 mosaic/blocks/test/**/bin/

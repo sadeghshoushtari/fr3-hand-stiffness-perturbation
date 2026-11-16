@@ -1,4 +1,4 @@
-// perturbation_test.cpp
+// perturbation.cpp
 //
 // Measures the operator's arm stiffness at the FR3 handle. Single self-contained file.
 //
@@ -7,13 +7,13 @@
 // on the handle the handle moves only part of each step: K_h dx = K_r (dx_d - dx), see analyze_perturbation.py.
 // A trial whose label starts with "rot_" turns the equilibrium orientation instead (+-20 deg about x, y, z of the
 // base frame through the end-effector point), with a lower rotational K_r so the hand takes a measurable share.
-// The elastography sensors are logged by a separate program (robot_pc_sensor_logger.py on this PC over USB, or
+// The elastography sensors are logged by a separate program (sensors.py on this PC over USB, or
 // laptop_sensor_logger.py on a laptop); each trial's start and end are written here as Unix time so the two logs
 // can be matched by clock time.
 //
-// Build: g++ -std=c++17 -O2 -Wall -Wextra perturbation_test.cpp -I/usr/include/eigen3 -o perturbation_test
+// Build: g++ -std=c++17 -O2 -Wall -Wextra perturbation.cpp -I/usr/include/eigen3 -o perturbation
 //            -lfranka -pthread
-// Usage: perturbation_test [<franka-ip>] [--out <dir>] [--console]
+// Usage: ./perturbation [<franka-ip>] [--out <dir>] [--console]
 //        (default robot 169.254.105.210, default log dir perturbation_logs/<date_time>)
 //
 // Default: MOSAIC drives the perturbations (see below). Ctrl+C stops the robot at once.

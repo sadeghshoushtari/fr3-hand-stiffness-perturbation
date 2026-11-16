@@ -1,10 +1,10 @@
 """Sensor log on the robot PC, board connected by USB (firmware esp32_robot_stiffness 1.1.0 or later).
 
-  python3 robot_pc_sensor_logger.py [--port /dev/ttyUSB0] [--out <dir>] [--max-min 60] [--udp 127.0.0.1:50500]
-                                    [--commands 50601]          (or: sensors)
+  python3 sensors.py      (options, normally not needed: --port /dev/ttyUSB0 --out <dir> --max-min 60
+                           --udp 127.0.0.1:50500 --commands 50601)
 
 The board prints one line per feature update, "F,<12 values>" (same values as its UDP packet). Every line is written
-with this PC's Unix time to <out>/sensors.csv. perturbation_test runs on the same PC and writes the trial times as
+with this PC's Unix time to <out>/sensors.csv. perturbation.cpp runs on the same PC and writes the trial times as
 Unix time, so no clock correction is needed:
 
   python3 analyze_perturbation.py perturbation_logs/<date_time> --sensors <out>/sensors.csv

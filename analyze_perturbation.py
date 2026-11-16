@@ -1,4 +1,4 @@
-"""Hand stiffness per trial from a perturbation_test log, next to the elastography features of the same trial.
+"""Hand stiffness per trial from a perturbation.cpp log, next to the elastography features of the same trial.
 
   python analyze_perturbation.py <log_dir> [--hold 0.6 1.1] [--sensors <laptop_dir>/sensors_laptop.csv]
 
