@@ -166,6 +166,15 @@ public sealed class PerturbationCalibrationCore
             // MOSAIC delivers every packet in its own task: drop packets older than the last one, time with the
             // robot clock
             t = s[0];
+            if (t < _lastRobotT - 1.0)
+            {
+                // the robot clock went back: the perturbation program was restarted (its trial numbers start again
+                // at 1); run of 11-17: all packets of the first trial were dropped as old
+                Log("perturbation program restarted");
+                _lastRobotT = double.NegativeInfinity;
+                _closedRobotTrial = 0;
+                _boundRobotTrial = 0;
+            }
             if (t <= _lastRobotT)
                 return;
             _lastRobotT = t;
