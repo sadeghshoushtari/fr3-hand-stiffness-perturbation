@@ -24,7 +24,9 @@ FORMAT = "stiffness_projection/1"
 FORMAT2 = "stiffness_projection/2"
 FEATURES = {"biceps": (8, 9), "triceps": (10, 11)}
 PAIRS = ("biceps", "triceps")
-OUTPUT = ("kxx", "kyy", "kzz", "kxy", "kxz", "kyz", "k_volume", "sigma_biceps", "sigma_triceps", "valid")
+OUTPUT = ("kxx", "kyy", "kzz", "kxy", "kxz", "kyz", "k_volume", "sigma_biceps", "sigma_triceps", "valid",
+          "k_translation_cmd", "k_rotation_cmd")
+VALID = 9
 
 
 def export(model, index, posture, path, sigma_max=1.5, features=FEATURES):
@@ -62,7 +64,7 @@ def export(model, index, posture, path, sigma_max=1.5, features=FEATURES):
 def export_v2(model, index, path, sigma_max=1.5, features=FEATURES):
     """Write the model file in format 2: arm lengths and session posture instead of the geometry (the block evaluates
     the arm model itself, at the session posture or at the IMU posture), and an index direction per pair
-    (index = direction * wrap(phase - relaxed) for the phase index; format 1 has direction -1 for both)."""
+    (index = wrap to [-90, 270) of direction * (phase - relaxed) for the phase index; format 1 has direction -1 for both)."""
     if model.joint_groups:
         raise NotImplementedError("joint-level groups are not supported by the MOSAIC block")
     posture = index.get("posture") or {"upper_arm_deg": 90.0, "elbow_deg": 90.0}
@@ -111,9 +113,18 @@ def wrap_deg(a):
     return (a + 180.0) % 360.0 - 180.0
 
 
+# The phase index is direction * (phase - relaxed) wrapped to [-90, 270) deg: a change of up to 270 deg in the
+# contraction direction counts (triceps, run of 11-17: +212 deg at max effort, read as -148 deg by the shortest wrap).
+INDEX_WINDOW_LOW_DEG = 90.0
+
+
+def wrap_index_deg(a):
+    return (a + INDEX_WINDOW_LOW_DEG) % 360.0 - INDEX_WINDOW_LOW_DEG
+
+
 def raw_index(phase_deg, relaxed_deg, idx, direction=-1.0):
     if idx["kind"] == "phase":
-        return direction * wrap_deg(phase_deg - relaxed_deg)
+        return wrap_index_deg(direction * (phase_deg - relaxed_deg))
     c = 360.0 * idx["drive_hz"] * idx["spacing_m"]
     lag = (idx["lag_offset_deg"] - phase_deg) % 360.0
     lag_relaxed = (idx["lag_offset_deg"] - relaxed_deg) % 360.0
@@ -163,10 +174,22 @@ def stiffness(data, sigma, geo=None):
     return 0.5 * (kc + kc.T)
 
 
-def output(kc, sigma, valid):
+def command(data, name, sigma):
+    """Overall stiffness command of the model file's "commands" map (None without one)."""
+    c = (data.get("commands") or {}).get(name)
+    if not c:
+        return None
+    return float(np.clip(c["c0"] + c["c1"] * 0.5 * (sigma["biceps"] + sigma["triceps"]), c["min"], c["max"]))
+
+
+def output(kc, sigma, valid, data=None):
     vol = float(np.linalg.det(kc) ** (1.0 / 3.0)) if np.linalg.det(kc) > 0 else 0.0
+    data = data or {}
+    k_t = command(data, "translation", sigma)
+    k_r = command(data, "rotation", sigma)
     return [kc[0, 0], kc[1, 1], kc[2, 2], kc[0, 1], kc[0, 2], kc[1, 2], vol, sigma["biceps"], sigma["triceps"],
-            1.0 if valid else 0.0]
+            1.0 if valid else 0.0, float(np.clip(vol, 50.0, 800.0)) if k_t is None else k_t,
+            0.0 if k_r is None else k_r]
 
 
 class Projection:
@@ -182,6 +205,10 @@ class Projection:
         sigma = sigmas(self.data, features)
         kc = stiffness(self.data, sigma, self.geo) if sigma is not None else None
         if kc is None:
-            return (self.last[:-1] + [0.0]) if self.last is not None else [0.0] * len(OUTPUT)
-        self.last = output(kc, sigma, True)
+            if self.last is None:
+                return [0.0] * len(OUTPUT)
+            held = list(self.last)
+            held[VALID] = 0.0
+            return held
+        self.last = output(kc, sigma, True, self.data)
         return list(self.last)

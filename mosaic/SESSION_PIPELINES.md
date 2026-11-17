@@ -22,14 +22,13 @@ slave), which must never run at the same time.
 | IMUControl | CommandSender | yes | starts/stops the lab's ESP IMU nodes (placeholder IP/port until the IMUs are available) |
 | IMU | UDPClient | yes | IMU quaternions, port 50700 (placeholder) |
 | LoadCell | UDPClient | yes | K6D80 + GSV-8DS force/torque, port 50800 (placeholder until its connection is known) |
-| Effort | Trigger | yes | operator state of the trial: empty (-1), relaxed (0), medium (0.5), max (1); fit (9) fits the model. Start capture starts the trial on the robot |
+| Effort | Trigger | yes | operator state of the trial: empty (-1), relaxed (0), medium (0.5), max (1). Start capture starts the trial on the robot; the fit runs by itself after the first max trial, later trials validate the model |
 | Robot | UDPClient | yes | sends the Effort code to the perturbation program (port 50900), receives its state (port 50910) |
-| Calibration | PerturbationCalibration | custom | per step: dx, dF; per trial: identified K (the trial ends when the robot's trial ends); on "fit": relaxed reference, direction and scale per pair, model parameters; writes the model file |
+| Calibration | PerturbationCalibration | custom | per step: dx, dF; per trial: identified K (the trial ends when the robot's trial ends); fit after the first max trial: relaxed reference, direction and scale per pair, model parameters, writes the model file; validation trials after it: predicted vs measured K |
 | Session | Trigger | yes | run: relaxed (0) and tense (1) captures set the reference and direction of this mounting |
 | Stiffness | StiffnessProjection | custom | features + posture (IMU, else session posture) -> 3x3 hand stiffness |
-| StiffnessVolume | Projector | yes | selects the scalar stiffness (element 6, ellipsoid volume) for the slave |
-| SafeRange | Function | yes | clips the command to 50-800 N/m |
-| ToSlave | UDPClient | yes | stiffness command to the slave, port 4500 |
+| Commands | Projector | yes | selects the two commands (elements 10, 11: translational N/m, rotational Nm/rad; clipped in the block to the calibration's ranges, default 50-800 N/m and 1-40 Nm/rad) |
+| ToSlave | UDPClient | yes | the two stiffness commands to the slave, port 4500 |
 | ToMonitor | UDPClient | yes | full output to port 50510 (watch_stiffness.py) |
 
 ## Outside MOSAIC (commanded from MOSAIC over UDP)
@@ -37,8 +36,8 @@ slave), which must never run at the same time.
 | Program | Why outside | Link |
 |---|---|---|
 | USB bridge `python3 sensors.py` (MOSAIC ports built in) | no built-in block reads the board over USB | sends the board's features to MOSAIC as if they came over Wi-Fi; switches the vibrator on the Vibrator card's commands |
-| Perturbation program `./perturbation` (robot 169.254.105.210 and MOSAIC mode built in) | libfranka 1 kHz real-time control | runs one trial of 12 steps (15 mm in 0.15 s, K_r = 1000 N/m, about 40 s) per Effort start, prints each step, streams its state with the step phase |
-| Teleoperation slave (with energy tank) | libfranka 1 kHz real-time control | reads the stiffness command on port 4500 (to be added) |
+| Perturbation program `./perturbation` (robot 169.254.105.210 and MOSAIC mode built in) | libfranka 1 kHz real-time control | runs one trial of 12 translation steps (15 mm in 0.15 s, K_r = 1000 N/m) and 6 rotation steps (20 deg in 0.6 s, 10 Nm/rad), about 43 s, per Effort start, prints each step, streams its state with the step phase |
+| Teleoperation slave (with energy tank) | libfranka 1 kHz real-time control | reads the two stiffness commands on port 4500 (to be added) |
 
 ## Ports
 
@@ -49,9 +48,9 @@ slave), which must never run at the same time.
 | 50700 | IMU nodes -> MOSAIC | 8 values, quaternions (placeholder) |
 | 50800 | load cell -> MOSAIC | force/torque (placeholder) |
 | 50900 | MOSAIC -> perturbation program | 1 double, Effort code: starts a trial (-1 empty, 0 relaxed, 0..1 effort; 9 ignored) |
-| 50910 | perturbation program -> MOSAIC | 100 Hz, 17 doubles: t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r, phase (0 idle, 1 rest, 2 ramp up, 3 hold, 4 ramp down), trial number (0 between trials) |
-| 4500 | MOSAIC -> slave | 1 double, stiffness command (N/m) |
-| 50510 | MOSAIC -> monitor | 10 doubles, full stiffness output |
+| 50910 | perturbation program -> MOSAIC | 100 Hz, 22 doubles: t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r, phase (0 idle, 1 rest, 2 ramp up, 3 hold, 4 ramp down), trial number (0 between trials), desired rotation offset x, y, z (rad), rotational K_r (Nm/rad), step kind (0 shift, 1 turn) |
+| 4500 | MOSAIC -> slave | 2 doubles: translational stiffness command (N/m), rotational stiffness command (Nm/rad) |
+| 50510 | MOSAIC -> monitor | 12 doubles, full stiffness output |
 
 ## Folders (robot PC)
 
@@ -78,13 +77,17 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
      horizontal pointing forward, forearm vertical up, elbow 90 deg; `posture:fixed;90;90`) and keeps the state (relaxed, or co-contraction medium / maximal) for the whole trial
      without reacting to the steps; trunk against the backrest (best strapped to the chair).
    - Effort card: select the state, press Start capture. The robot starts at once: Terminal 2 prints
-     `[TRIAL n] <state>: 12 steps of 15 mm, about 40 s` and then `step 1/12: +x` ... `step 12/12`.
-   - The trial ends by itself after the 12th step: Terminal 2 prints `[TRIAL n] done.`, Terminal 3 prints
-     `trial n (...) done: 12 cycles, K diag ... N/m, phase biceps ... deg, triceps ... deg`. The Effort card stops
+     `[TRIAL n] <state>: 12 steps of 15 mm and 6 turns of 20 deg, about 43 s` and then `step 1/18: +x` ...
+     `step 18/18` (turns are named `+rx` ...).
+   - The trial ends by itself after the 18th step: Terminal 2 prints `[TRIAL n] done.`, Terminal 3 prints
+     `trial n (...) done: 12 cycles, K diag ... N/m, 6 turns, K_rot diag ... Nm/rad, phase biceps ..., triceps ...`. The Effort card stops
      its capture by itself after a few seconds (its capture duration); that does not end the trial.
    - Rest about a minute between trials.
-6. Effort card: select fit, Start capture (the robot does not move). Terminal 3 prints the relaxed
-   reference, the direction of each pair, the fitted parameters and `model written to ...`.
+6. The fit runs by itself when the max trial is done: Terminal 3 prints `full effort trial done: fitting the
+   model`, the relaxed reference, the direction of each pair, the fitted parameters and `model written to ...`.
+   It also prints the two command maps (`translation command = c0 + c1 * mean sigma`, `rotation command = ...`).
+   Then one validation trial, as above: medium. Terminal 3 prints `validation trial n (...)`: both commands
+   predicted from the trial's phases vs measured, and the 3x3 model vs measured (session file, `validation`).
 7. Vibrator card: None, then Apply to device (= vibrator off). Terminal 2: q and Enter. Terminal 1: q and Enter.
 
 Where the results go (`<thesis>` = `~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis`):
@@ -100,7 +103,7 @@ Where the results go (`<thesis>` = `~/Mohammadsadegh_Shoushtaridehshal_Master_Th
 ## Teleoperation session, step by step
 
 1. Terminal 1: `python3 sensors.py` (in the repository folder)
-2. Teleoperation slave and master as usual (the slave reads the stiffness command on port 4500 once that input is
+2. Teleoperation slave and master as usual (the slave reads the two stiffness commands on port 4500 once that input is
    added; until then watch the output with
    `python3 ~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/watch_stiffness.py`).
 3. Terminal 3: MOSAIC as above, File -> Open -> `.../fr3-hand-stiffness-perturbation/mosaic/session_run.json`. Vibrator card: All, then Apply to device.
@@ -116,5 +119,5 @@ Repeat steps 4-5 after the sensors were taken off and put back on.
 Done and checked without the robot (`mosaic/blocks/test/`): both custom blocks; both pipelines in MOSAIC against a
 simulated operator, board and IMUs, with the real perturbation program built against a libfranka stub that simulates
 the handle and the hand (`test/robot_stub`); the bridge's vibrator commands (fake board on a pseudo-terminal). Not yet
-tested on the robot. To add: the slave's stiffness input on port 4500. Placeholders to fill when the hardware is
+tested on the robot. To add: the slave's input for the two stiffness commands on port 4500. Placeholders to fill when the hardware is
 there: IMU node address and format (quaternions aligned to the arm segments), load-cell connection, frame and sign.

@@ -26,8 +26,11 @@ from stiffness_model import StiffnessModel  # noqa: E402
 
 TRUTH = {"biceps": (0.01, 0.12), "triceps": (0.01, 0.08), "elbow_flexors": (0.008, 0.10), "shoulder": (0.01, 0.04)}
 K_EMPTY = [[40.0, 5.0, 0.0], [5.0, 35.0, 0.0], [0.0, 0.0, 60.0]]
+# rotational hand stiffness (Nm/rad): K_ROT_BASE * (1 + 3 * mean sigma), plus the robot's own share K_EMPTY_ROT
+K_ROT_BASE = [2.0, 1.5, 3.0]
+K_EMPTY_ROT = [[0.3, 0.0, 0.0], [0.0, 0.3, 0.0], [0.0, 0.0, 0.3]]
 LEVELS = {"empty": None, "relaxed": (0.0, 0.0), "medium": (0.5, 0.45), "max": (1.0, 1.0), "effort60": (0.6, 0.7)}
-TRIAL_S, GAP_S, FIRST_S = 44.0, 4.0, 4.0  # a trial of perturbation.cpp takes about 40 s
+TRIAL_S, GAP_S, FIRST_S = 50.0, 4.0, 4.0  # a trial of perturbation.cpp (12 shifts + 6 turns) takes 40-47 s
 # robot offset, robot state, slave command: moved for the test (Windows reserves ranges around 50900 on some PCs and
 # IPsec uses 4500)
 PORTS = {50900: 51900, 50910: 51910, 4500: 51500}
@@ -72,21 +75,25 @@ def main():
         if sig is not None:
             k = k + truth.cartesian_stiffness(posture, {"biceps": sig[0], "triceps": sig[1]})
         s = sig or (0.0, 0.0)
+        k_rot = np.array(K_EMPTY_ROT)
+        if sig is not None:
+            k_rot = k_rot + np.diag(K_ROT_BASE) * (1.0 + 3.0 * 0.5 * (s[0] + s[1]))
         phase = [mount[0] + mount[1] * s[0], mount[2] + mount[3] * s[1]]
         return {"t0": t0, "t1": t1, "level": level, "sigma": list(s), "phase_deg": phase, "K_hand": k.tolist(),
-                "imu": posture_quats(posture)}
+                "K_hand_rot": k_rot.tolist(), "imu": posture_quats(posture)}
 
-    calib_mount = (-48.7, 15.0, 149.2, -10.0)
+    # triceps: the phase turns by 212 deg at full effort (run of 11-17), past the 180 deg of the shortest wrap
+    calib_mount = (-48.7, 15.0, 149.2, 212.0)
     windows, actions, t = [], [], FIRST_S
-    for label, code in (("empty", -1), ("relaxed", 0), ("medium", 0.5), ("max", 1)):
+    # the fit runs by itself after "max"; the last trial validates the model
+    for label, code in (("empty", -1), ("relaxed", 0), ("medium", 0.5), ("max", 1), ("medium", 0.5)):
         windows.append(window(t - GAP_S / 2, t + TRIAL_S + GAP_S / 2, label, calib_mount))
         # the Trigger card stops the capture by itself after its capture duration (default 5 s)
         actions += [f"{t:.1f} capture Effort {label}", f"{t + 5.0:.1f} stop Effort"]
         t += TRIAL_S + GAP_S
-    actions += [f"{t:.1f} capture Effort fit", f"{t + 1:.1f} stop Effort"]
     calib_end = t + 4.0
 
-    run_mount = (-30.0, -15.0, 160.0, 10.0)
+    run_mount = (-30.0, -15.0, 160.0, 212.0)
     run = [window(0.0, 10.0, "relaxed", run_mount), window(10.0, 18.0, "max", run_mount),
            window(18.0, 32.0, "effort60", run_mount), window(32.0, 46.0, "effort60", run_mount, second)]
     run_actions = ["4 capture Session relaxed", "9 stop Session", "12 capture Session tense", "17 stop Session"]
@@ -94,7 +101,7 @@ def main():
               {"t0": 36.0, "t1": 44.0, "posture": [70.0, 110.0], "sigma": LEVELS["effort60"]}]
 
     (out / "scenario.json").write_text(json.dumps({
-        "truth": TRUTH, "k_empty": K_EMPTY, "robot_ports": [PORTS[50900], PORTS[50910]], "slave_port": PORTS[4500],
+        "truth": TRUTH, "k_empty": K_EMPTY, "k_rot_base": K_ROT_BASE, "k_empty_rot": K_EMPTY_ROT, "robot_ports": [PORTS[50900], PORTS[50910]], "slave_port": PORTS[4500],
         "calibration": {"windows": windows, "end_s": calib_end},
         "run": {"windows": run, "end_s": 48.0, "checks": checks}}, indent=1))
     (out / "actions_calibration.txt").write_text("\n".join(actions) + "\n")

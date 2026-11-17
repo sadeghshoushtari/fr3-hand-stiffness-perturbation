@@ -55,14 +55,16 @@ IMU posture.
 | IMU | 8 values: unit quaternions (w, x, y, z) of upper arm and forearm in the robot base frame |
 | Session | Trigger with `relaxed:0`, `tense:1`: start/stop capture sets the relaxed reference / the index direction |
 
-Output, 10 doubles: K_xx, K_yy, K_zz, K_xy, K_xz, K_yz (N/m, robot base frame), K volume (cube root of det K),
+Output, 12 doubles: K_xx, K_yy, K_zz, K_xy, K_xz, K_yz (N/m, robot base frame), K volume (cube root of det K),
 sigma biceps, sigma triceps (0 = relaxed, 1 = strongest calibration trial, capped at 1.5), valid (0 = packet without
-a usable phase: values of the last valid packet).
+a usable phase: values of the last valid packet), translational command (N/m) and rotational command (Nm/rad):
+clip(c0 + c1 * mean sigma) from the `commands` of the model file, fitted by the calibration to the overall
+stiffness (mean of the diagonal) of its trials.
 
 `PerturbationCalibration` (Params: model file to write, then `key:value` options, see the header of
 `PerturbationCalibration.cs`): inputs ESP32 features, Robot state (17 doubles from `perturbation.cpp`, with the push
 phase and trial number that define the cycles and the end of a trial), LoadCell, IMU and the Effort trigger (codes -1
-empty, 0 relaxed, 0..1 effort, 9 fit). A Stimulus block can drive the cycles instead (`plan:` input). Output per trial: trial, code, cycles, K entries; after the fit: -1, 9, trials, (a, b) per group. The trials
+empty, 0 relaxed, 0..1 effort; 9 fits again). The fit runs by itself after the first trial at code 1; later trials are validation trials (predicted vs measured stiffness). A Stimulus block can drive the cycles instead (`plan:` input). Output per trial: trial, code, cycles, K entries; after the fit: -1, 9, trials, (a, b) per group. The trials
 and the fit are also written to `calibration_<date_time>.json` in the block's `Path`.
 
 ## Checks

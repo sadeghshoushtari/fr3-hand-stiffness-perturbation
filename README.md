@@ -17,40 +17,52 @@ it, the handle moves only part of the way, because the hand pushes back. At rest
 
     K_h dx = K_r (dx_d - dx)
 
-dx_d is the commanded step and dx is how far the handle actually moved. Twelve steps per trial (the 6 axial
-directions +x, -x, +y, -y, +z, -z and 6 diagonals drawn at random from the 12 diagonals of the xy, xz and yz planes,
-in shuffled order) give a 3x3 stiffness matrix K_h by least squares.
+dx_d is the commanded step and dx is how far the handle actually moved. Each trial started from MOSAIC has 18 steps
+in shuffled order, so that one contraction gives both stiffnesses the teleoperation slave needs:
+
+- 12 translation steps (the 6 axial directions +x, -x, +y, -y, +z, -z and 6 diagonals drawn at random from the 12
+  diagonals of the xy, xz and yz planes) give the 3x3 translational stiffness K_h (N/m) by least squares;
+- 6 rotation steps (+-20 deg about x, y and z, see below) give the 3x3 rotational stiffness (Nm/rad).
+
+The slave gets two numbers, the overall translational and rotational stiffness (mean of the diagonal). From 12 steps
+the mean of the diagonal varies by 7-8 % between resamplings of the steps (bootstrap, run of 2026-11-17, effort trials),
+the full 3x3 matrix by 18-41 %.
 
 A second, independent estimate uses the FR3's own estimate of the external force (`O_F_ext_hat_K`, from its joint
 torque sensors): K = -dF/dx. On the FR3 this estimate is the wrench the robot applies to the hand (first lab run,
 2026-11-12), so the analysis uses its negative. A trial recorded with nobody holding the handle (`empty`) is subtracted per direction to
 remove errors of the robot's dynamics model. No force/torque sensor is needed.
 
-Step timing (relative to the robot's home pose), about 40 s per trial:
+Step timing (relative to the robot's home pose), about 43 s per trial:
 
-| Part     | Duration                  | Equilibrium point                     |
-|----------|---------------------------|---------------------------------------|
-| Lead-in  | 2 s                       | home                                  |
-| Ramp up  | 0.15 s (raised cosine)    | home to home + 15 mm in one direction |
-| Hold     | 1 s                       | home + 15 mm                          |
-| Ramp down| 0.15 s                    | back to home                          |
-| Rest     | random 1.5-2.5 s          | home                                  |
+| Part     | Translation step          | Rotation step               | Equilibrium point                      |
+|----------|---------------------------|-----------------------------|----------------------------------------|
+| Lead-in  | 2 s (once per trial)      |                             | home                                   |
+| Ramp up  | 0.15 s (raised cosine)    | 0.6 s                       | home to home + 15 mm or 20 deg         |
+| Hold     | 0.6 s                     | 0.8 s                       | home + 15 mm or 20 deg                 |
+| Ramp down| 0.15 s                    | 0.6 s                       | back to home                           |
+| Rest     | random 0.8-1.2 s          | random 0.8-1.2 s            | home                                   |
+
+The handle settles 0.3 s after a translation ramp (run of 2026-11-17), so the hold is read from 0.35 s after the ramp.
 
 The random rests stop the operator from anticipating the next step. At 15 mm the robot force stays below 15 N, under
 the 35 N collision threshold of the slave. The operator sits with the trunk against the backrest (best strapped to
 the chair), so that the measurement is of the arm and not of the whole body; the shoulder cannot be stiffened at will
 and stays part of the measured hand stiffness, as in the literature.
 
-**Rotation trials.** A trial whose label starts with `rot_` turns the handle instead: the equilibrium orientation is
-rotated by +-20 deg about the x, y and z axes of the base frame through the end-effector point, twice each, with
-0.6 s ramps and a 1.5 s hold (slower than the shifts, to keep the wrist joints well below their speed guard), while
-the position stays held at 1000 N/m. For these trials the rotational stiffness of the
-robot is lowered from 40 to 10 Nm/rad (blended over 0.5 s at the start and end of the trial), so the hand takes a
+**Rotation steps.** The equilibrium orientation is rotated by +-20 deg about the x, y and z axes of the base frame
+through the end-effector point, with 0.6 s ramps (slower than the shifts, to keep the wrist joints well below their
+speed guard), while the position stays held at 1000 N/m. In every trial with rotation steps the rotational stiffness
+of the robot is lowered from 40 to 10 Nm/rad (blended over 0.5 s at the start and end of the trial), so the hand takes a
 measurable share of each turn; at most about 3.5 Nm acts on the hand. The orientation law is the slave's (quaternion
 vector part), whose torque for small angles is half its gain: the gains are 80 and 20, the effective stiffnesses 40
 and 10 Nm/rad, and trials.csv records the effective value. The same two estimates give the 3x3 rotational stiffness
-in Nm/rad, with the handle's rotation vector for dx and the moments of `O_F_ext_hat_K` for F; `rot_empty` is the
-empty trial of the rotation steps (console trials only). The operator keeps one muscle state for the whole trial (for
+in Nm/rad, with the handle's rotation vector for dx and the moments of `O_F_ext_hat_K` for F. Console trials
+(`--console`) are translation only (6 axial + 12 diagonal steps) or, for a label starting with `rot_`, rotation only
+(3 x 6 turns, 1.5 s hold); `rot_empty` is the empty trial of the latter. The sensors sit on biceps and triceps, not on
+the wrist muscles that resist most of a turn of the hand: the rotational command is a measured map from the same
+upper-arm index (the biceps also supinates the forearm, and co-contraction stiffens the whole arm), not a measurement
+of the wrist muscles. The operator keeps one muscle state for the whole trial (for
 example relaxed, or co-contracting medium or maximally). With a hand stiffness of 300-1500 N/m the handle moves
 6-11.5 mm of each 15 mm step and the hand feels 3.5-9 N. In the run of 2026-11-17 (5 cm pushes) the hand stiffness
 rose 4-5 times from relaxed to co-contraction but was the same at 30, 60 and 100 % effort, so the calibration uses

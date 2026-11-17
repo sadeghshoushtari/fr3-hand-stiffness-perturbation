@@ -30,19 +30,14 @@
     "DesiredRate": 5,
     "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/run/"
   },
-  "StiffnessVolume": {
+  "Commands": {
     "Type": "Projector",
     "Inputs": ["Stiffness"],
-    "Params": ["6"]
-  },
-  "SafeRange": {
-    "Type": "Function",
-    "Inputs": ["StiffnessVolume"],
-    "Params": ["clip", 50, 800]
+    "Params": ["10;11"]
   },
   "ToSlave": {
     "Type": "UDPClient",
-    "Inputs": ["SafeRange"],
+    "Inputs": ["Commands"],
     "Params": [50511, "double", "127.0.0.1", 4500],
     "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/run/"
   },

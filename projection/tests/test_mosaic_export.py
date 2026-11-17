@@ -61,9 +61,10 @@ def test_unusable_packet_holds_last_output(model, tmp_path):
     proj = mx.Projection(data)
     assert proj.step(features(None, -170.0)) == [0.0] * len(mx.OUTPUT)  # nothing valid yet
     good = proj.step(features(-120.0, -160.0))
-    assert good[-1] == 1.0
+    assert good[mx.VALID] == 1.0
     held = proj.step(features(-120.0, None))
-    assert held[:-1] == good[:-1] and held[-1] == 0.0
+    assert held[mx.VALID] == 0.0 and [v for i, v in enumerate(held) if i != mx.VALID] == \
+        [v for i, v in enumerate(good) if i != mx.VALID]
 
 
 def test_single_index_ignores_the_other_pair(model, tmp_path):

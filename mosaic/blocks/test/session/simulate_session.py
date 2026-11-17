@@ -6,10 +6,11 @@ Plays the time windows of scenario.json (make_scenario.py) from its start:
   board   5 Hz, 12 doubles to 127.0.0.1:50500 (esp32_robot_stiffness features; pair phases of the window + 1.5 deg
           noise; [8, 9] biceps cos/sin, [10, 11] triceps)
   IMU     50 Hz, 8 floats to 127.0.0.1:50700 (upper-arm and forearm quaternions of the window's posture)
-  hand    (calibration) the window's hand stiffness K_h (9 numbers, N/m) written to <hand_file>, which the
-          perturbation program built against the libfranka stub (test/robot_stub) reads
-  outputs (run) records the pipeline's output: port 50510 (StiffnessProjection, 10 doubles) and 4500 (stiffness
-          command, 1 double; scenario "slave_port")
+  hand    (calibration) the window's hand stiffness K_h (9 numbers, N/m) and rotational hand stiffness K_hr (9
+          numbers, Nm/rad) written to <hand_file>, which the perturbation program built against the libfranka stub
+          (test/robot_stub) reads
+  outputs (run) records the pipeline's output: port 50510 (StiffnessProjection, 12 doubles) and 4500 (translational
+          and rotational stiffness commands, 2 doubles; scenario "slave_port")
 Writes <out_dir>/sim_features.csv (t, 12 values sent) and, in run mode, sim_monitor.csv and sim_slave.csv.
 """
 import json
@@ -61,10 +62,10 @@ def main():
         if t > end_s:
             break
         w = window(t)
-        if hand_file is not None and hand != w["K_hand"]:
-            hand = w["K_hand"]
+        if hand_file is not None and hand != (w["K_hand"], w.get("K_hand_rot")):
+            hand = (w["K_hand"], w.get("K_hand_rot"))
             tmp = hand_file.with_suffix(".tmp")
-            tmp.write_text(" ".join(repr(v) for row in hand for v in row) + "\n")
+            tmp.write_text(" ".join(repr(v) for k in hand if k is not None for row in k for v in row) + "\n")
             tmp.replace(hand_file)
         if t - last["board"] >= 0.2:
             last["board"] = t

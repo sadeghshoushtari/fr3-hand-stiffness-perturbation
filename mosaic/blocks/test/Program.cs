@@ -25,10 +25,10 @@ foreach (var name in args.Skip(1))
         for (int k = 0; k < got.Length; k++)
         {
             double e = expected[i][k];
-            double err = k < 7 ? Math.Abs(got[k] - e) / Math.Max(Math.Abs(e), 1.0) : Math.Abs(got[k] - e);
+            double err = k < 7 || k >= 10 ? Math.Abs(got[k] - e) / Math.Max(Math.Abs(e), 1.0) : Math.Abs(got[k] - e);
             if (err > worst) { worst = err; worstRow = i; }
         }
-        valid += got[^1] == 1.0 ? 1 : 0;
+        valid += got[9] == 1.0 ? 1 : 0;
     }
     bool pass = worst <= (model.Format == StiffnessProjectionModel.Format2 ? TolFormat2 : Tol);
     ok &= pass;

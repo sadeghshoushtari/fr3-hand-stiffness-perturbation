@@ -19,11 +19,16 @@ namespace MOSAIC.Models.Elastography;
 ///   "stiffness_projection/2": arm lengths and session posture; the geometry is evaluated here with <see cref="ArmModel"/>,
 ///   at the session posture or at the posture set by <see cref="SetPosture"/> (IMUs); index direction per pair.
 /// Per feature vector (esp32_robot_stiffness output, 12 doubles):
-///   phase of each pair = atan2(sin, cos); index "phase" = direction * wrap(phase - relaxed), "speed2" =
+///   phase of each pair = atan2(sin, cos); index "phase" = direction * (phase - relaxed) wrapped to [-90, 270) deg
+///   (<see cref="WrapIndexDeg"/>), "speed2" =
 ///   (c / c_relaxed)^2 - 1 with c = 360 f d / lag, lag = (offset - phase) mod 360;
 ///   sigma = clip(max(index, 0) / scale, 0, sigma_max); u_g = a_g + b_g sum_p w_gp sigma_p; f = F_max u; k = gamma f / l0;
 ///   K_j = J_m^T diag(k) J_m + sum_i f_i d2l_i/dq2; K_c = (J K_j^-1 J^T)^-1.
-/// Output: kxx, kyy, kzz, kxy, kxz, kyz, k_volume (cube root of det), sigma_biceps, sigma_triceps, valid.
+/// Output: kxx, kyy, kzz, kxy, kxz, kyz, k_volume (cube root of det), sigma_biceps, sigma_triceps, valid,
+/// k_translation_cmd (N/m), k_rotation_cmd (Nm/rad). The two commands are the operator's overall translational and
+/// rotational stiffness (mean of the diagonal) from the calibration's linear maps over the mean sigma,
+/// clip(c0 + c1 (sigma_biceps + sigma_triceps) / 2, min, max) ("commands" of the model file); without them the
+/// translational command is clip(k_volume, 50, 800) and the rotational one 0 (no command).
 /// A vector without a usable phase (cos = sin = 0) or with K_j not positive definite repeats the last valid
 /// output with valid = 0 (all zeros before the first valid one).
 /// </remarks>
@@ -31,10 +36,20 @@ public sealed class StiffnessProjectionModel
 {
     public const string Format1 = "stiffness_projection/1";
     public const string Format2 = "stiffness_projection/2";
-    public const int OutputLength = 10;
+    public const int OutputLength = 12;
+    public const int ValidIndex = 9;
     public static readonly string[] Pairs = { "biceps", "triceps" };
     public static readonly string[] OutputNames =
-        { "kxx", "kyy", "kzz", "kxy", "kxz", "kyz", "k_volume", "sigma_biceps", "sigma_triceps", "valid" };
+    {
+        "kxx", "kyy", "kzz", "kxy", "kxz", "kyz", "k_volume", "sigma_biceps", "sigma_triceps", "valid",
+        "k_translation_cmd", "k_rotation_cmd",
+    };
+
+    /// <summary>Linear map of the mean sigma to an overall stiffness, clipped to [Min, Max].</summary>
+    public sealed record CommandMap(double C0, double C1, double Min, double Max)
+    {
+        public double Eval(double[] sigma) => Math.Clamp(C0 + C1 * 0.5 * (sigma[0] + sigma[1]), Min, Max);
+    }
 
     /// <summary>One muscle group: members (muscle indices), driver weights over <see cref="Pairs"/>, u = a + b drive.</summary>
     public sealed record Group(string Name, int[] Members, double[] Weights, double A, double B);
@@ -70,6 +85,8 @@ public sealed class StiffnessProjectionModel
     public double SessionElbowDeg { get; }
     public string Format { get; }
     public JsonNode? FitReport { get; set; }
+    public CommandMap? TranslationCommand { get; set; }
+    public CommandMap? RotationCommand { get; set; }
 
     public string Kind => Index.Kind;
     public int MuscleCount => _fMax.Length;
@@ -157,6 +174,16 @@ public sealed class StiffnessProjectionModel
         }
         if (Index.Kind != "phase" && Index.Kind != "speed2")
             throw new InvalidDataException($"unknown index kind '{Index.Kind}'");
+        if (root.TryGetProperty("commands", out var cmds) && cmds.ValueKind == JsonValueKind.Object)
+        {
+            static CommandMap? Map(JsonElement c, string name) =>
+                c.TryGetProperty(name, out var m) && m.ValueKind == JsonValueKind.Object
+                    ? new CommandMap(m.GetProperty("c0").GetDouble(), m.GetProperty("c1").GetDouble(),
+                        m.GetProperty("min").GetDouble(), m.GetProperty("max").GetDouble())
+                    : null;
+            TranslationCommand = Map(cmds, "translation");
+            RotationCommand = Map(cmds, "rotation");
+        }
         _single = Index.SingleIndex is null ? -1 : PairIndex(Index.SingleIndex);
     }
 
@@ -200,14 +227,15 @@ public sealed class StiffnessProjectionModel
         if (sigma is null || kc is null)
         {
             var held = _last is null ? new double[OutputLength] : (double[])_last.Clone();
-            held[OutputLength - 1] = 0.0;
+            held[ValidIndex] = 0.0;
             return held;
         }
         double det = Det3(kc);
+        double volume = det > 0 ? Math.Cbrt(det) : 0.0;
         _last = new[]
         {
-            kc[0, 0], kc[1, 1], kc[2, 2], kc[0, 1], kc[0, 2], kc[1, 2],
-            det > 0 ? Math.Cbrt(det) : 0.0, sigma[0], sigma[1], 1.0,
+            kc[0, 0], kc[1, 1], kc[2, 2], kc[0, 1], kc[0, 2], kc[1, 2], volume, sigma[0], sigma[1], 1.0,
+            TranslationCommand?.Eval(sigma) ?? Math.Clamp(volume, 50.0, 800.0), RotationCommand?.Eval(sigma) ?? 0.0,
         };
         return (double[])_last.Clone();
     }
@@ -251,7 +279,7 @@ public sealed class StiffnessProjectionModel
     {
         double relaxedDeg = index.RelaxedPhaseDeg[p];
         if (index.Kind == "phase")
-            return index.Direction[p] * WrapDeg(phaseDeg - relaxedDeg);
+            return WrapIndexDeg(index.Direction[p] * (phaseDeg - relaxedDeg));
         double lag = Mod360(index.LagOffsetDeg - phaseDeg);
         double lagRelaxed = Mod360(index.LagOffsetDeg - relaxedDeg);
         double ratio = Math.Max(lagRelaxed, 1.0) / Math.Max(lag, 1.0);  // c / c_relaxed, c = 360 f d / lag
@@ -330,9 +358,10 @@ public sealed class StiffnessProjectionModel
         return string.Join("; ", msg);
     }
 
-    /// <summary>Sets the index direction of each pair from a tense capture: the sign of the phase change from the
-    /// relaxed reference, so that the index rises on contraction. A change below
-    /// <see cref="MinDirectionChangeDeg"/> keeps the direction.</summary>
+    /// <summary>Sets the index direction of each pair from a tense capture: the calibration direction is kept when
+    /// the index rises in it (a change of up to 270 deg, see <see cref="WrapIndexDeg"/>) and reversed when the phase
+    /// moved the other way (by up to 90 deg). A change below <see cref="MinDirectionChangeDeg"/> keeps the
+    /// direction.</summary>
     public string SetDirectionFromTense(double?[] meanPhaseDeg)
     {
         var msg = new List<string>();
@@ -343,14 +372,15 @@ public sealed class StiffnessProjectionModel
                 msg.Add($"{Pairs[p]}: no phase, direction kept at {Index.Direction[p]:+0;-0}");
                 continue;
             }
-            double change = WrapDeg(v - Index.RelaxedPhaseDeg[p]);
+            double change = WrapIndexDeg(Index.Direction[p] * (v - Index.RelaxedPhaseDeg[p]));
             if (Math.Abs(change) < MinDirectionChangeDeg)
             {
                 msg.Add($"{Pairs[p]}: change {change:F1} deg too small, direction kept at {Index.Direction[p]:+0;-0}");
                 continue;
             }
-            Index.Direction[p] = Math.Sign(change);
-            msg.Add($"{Pairs[p]}: change {change:F1} deg, direction {Index.Direction[p]:+0;-0}");
+            if (change < 0)
+                Index.Direction[p] = -Index.Direction[p];
+            msg.Add($"{Pairs[p]}: index change {Math.Abs(change):F1} deg, direction {Index.Direction[p]:+0;-0}");
         }
         return string.Join("; ", msg);
     }
@@ -401,8 +431,19 @@ public sealed class StiffnessProjectionModel
                 },
             },
             ["fit"] = FitReport?.DeepClone(),
+            ["commands"] = TranslationCommand is null && RotationCommand is null ? null : new JsonObject
+            {
+                ["translation"] = CommandJson(TranslationCommand, "N/m"),
+                ["rotation"] = CommandJson(RotationCommand, "Nm/rad"),
+            },
         };
     }
+
+    private static JsonObject? CommandJson(CommandMap? c, string unit) => c is null ? null : new JsonObject
+    {
+        ["c0"] = c.C0, ["c1"] = c.C1, ["min"] = c.Min, ["max"] = c.Max, ["unit"] = unit,
+        ["input"] = "mean of sigma_biceps and sigma_triceps",
+    };
 
     /// <summary>Writes the model file; an existing file is kept as &lt;path&gt;.bak.</summary>
     public void Save(string path)
@@ -426,6 +467,13 @@ public sealed class StiffnessProjectionModel
     public static double Mod360(double a) => a - 360.0 * Math.Floor(a / 360.0);
 
     public static double WrapDeg(double a) => Mod360(a + 180.0) - 180.0;
+
+    /// <summary>Lower end (deg) of the window of the phase index.</summary>
+    public const double IndexWindowLowDeg = 90.0;
+
+    /// <summary>Wraps a signed phase change into [-90, 270) deg: a change of up to 270 deg in the contraction direction
+    /// counts (triceps, run of 11-17: +212 deg at max effort, read as -148 deg by <see cref="WrapDeg"/>).</summary>
+    public static double WrapIndexDeg(double a) => Mod360(a + IndexWindowLowDeg) - IndexWindowLowDeg;
 
     /// <summary>Circular mean of angles in degrees, or null for an empty list.</summary>
     public static double? CircularMeanDeg(IEnumerable<double> deg)
