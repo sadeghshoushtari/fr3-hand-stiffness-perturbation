@@ -75,7 +75,7 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
 4. Vibrator card: data streams All, then Apply to device (= vibrator on). Terminal 1 prints `vibrator ON`.
 5. One trial per operator state, in this order: empty, relaxed, medium, max.
    - empty: nobody touches the handle. Others: the operator holds the handle in the session posture (upper arm
-     vertical, elbow 90 deg) and keeps the state (relaxed, or co-contraction medium / maximal) for the whole trial
+     horizontal pointing forward, forearm vertical up, elbow 90 deg; `posture:fixed;90;90`) and keeps the state (relaxed, or co-contraction medium / maximal) for the whole trial
      without reacting to the steps; trunk against the backrest (best strapped to the chair).
    - Effort card: select the state, press Start capture. The robot starts at once: Terminal 2 prints
      `[TRIAL n] <state>: 12 steps of 15 mm, about 40 s` and then `step 1/12: +x` ... `step 12/12`.

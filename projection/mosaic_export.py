@@ -65,7 +65,7 @@ def export_v2(model, index, path, sigma_max=1.5, features=FEATURES):
     (index = direction * wrap(phase - relaxed) for the phase index; format 1 has direction -1 for both)."""
     if model.joint_groups:
         raise NotImplementedError("joint-level groups are not supported by the MOSAIC block")
-    posture = index.get("posture") or {"upper_arm_deg": 0.0, "elbow_deg": 90.0}
+    posture = index.get("posture") or {"upper_arm_deg": 90.0, "elbow_deg": 90.0}
     direction = index.get("direction") or {}
     groups = [{"name": g, "members": [int(i) for i in model.members[g]], "drivers": dict(drivers),
                "a": float(model.params[g][0]), "b": float(model.params[g][1])}

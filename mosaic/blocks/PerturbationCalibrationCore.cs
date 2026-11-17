@@ -47,7 +47,7 @@ public sealed class PerturbationCalibrationCore
         public string ForceMode { get; set; } = "robot";
         public double? ForceSign { get; set; }  // default +1 for wrench, -1 for loadcell
         public bool ImuPosture { get; set; }
-        public double UpperArmDeg { get; set; }
+        public double UpperArmDeg { get; set; } = 90.0;
         public double ElbowDeg { get; set; } = 90.0;
         public string Axes { get; set; } = "xyz";
         public double[] ArmLengths { get; set; } = { 0.30, 0.27, 0.07 };

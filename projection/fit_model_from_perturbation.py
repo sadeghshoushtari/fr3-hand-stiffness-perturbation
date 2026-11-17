@@ -93,7 +93,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("summary", type=Path)
     ap.add_argument("--out", type=Path)
-    ap.add_argument("--upper-arm-deg", type=float, default=0.0, help="upper arm forward of vertical")
+    ap.add_argument("--upper-arm-deg", type=float, default=90.0, help="upper arm forward of vertical (90 = horizontal, session posture)")
     ap.add_argument("--elbow-deg", type=float, default=90.0, help="elbow flexion, 0 = straight")
     ap.add_argument("--axes", default="x", help="Cartesian axes fitted, e.g. x or xz")
     ap.add_argument("--single-index", choices=PAIRS, help="drive both indices with one pair (other pair unusable)")

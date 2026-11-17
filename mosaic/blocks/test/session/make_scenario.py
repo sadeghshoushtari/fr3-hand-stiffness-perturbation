@@ -63,8 +63,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     arm = ArmModel(0.30, 0.27, 0.07)
     truth = StiffnessModel(arm, params=TRUTH)
-    home = session_posture(0.0, 90.0)
-    second = session_posture(20.0, 70.0)
+    home = session_posture(90.0, 90.0)
+    second = session_posture(70.0, 110.0)
 
     def window(t0, t1, level, mount, posture=home):
         sig = LEVELS[level]
@@ -90,8 +90,8 @@ def main():
     run = [window(0.0, 10.0, "relaxed", run_mount), window(10.0, 18.0, "max", run_mount),
            window(18.0, 32.0, "effort60", run_mount), window(32.0, 46.0, "effort60", run_mount, second)]
     run_actions = ["4 capture Session relaxed", "9 stop Session", "12 capture Session tense", "17 stop Session"]
-    checks = [{"t0": 22.0, "t1": 30.0, "posture": [0.0, 90.0], "sigma": LEVELS["effort60"]},
-              {"t0": 36.0, "t1": 44.0, "posture": [20.0, 70.0], "sigma": LEVELS["effort60"]}]
+    checks = [{"t0": 22.0, "t1": 30.0, "posture": [90.0, 90.0], "sigma": LEVELS["effort60"]},
+              {"t0": 36.0, "t1": 44.0, "posture": [70.0, 110.0], "sigma": LEVELS["effort60"]}]
 
     (out / "scenario.json").write_text(json.dumps({
         "truth": TRUTH, "k_empty": K_EMPTY, "robot_ports": [PORTS[50900], PORTS[50910]], "slave_port": PORTS[4500],

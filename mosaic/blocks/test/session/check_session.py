@@ -75,7 +75,7 @@ def main():
     raw = [[idx["direction"][p] * mx.wrap_deg(t["phase_deg"][i] - idx["relaxed_phase_deg"][p]) for i, p in
             enumerate(PAIRS)] for t in muscle]
     sig = [{p: max(r[i], 0.0) / idx["scale"][p] for i, p in enumerate(PAIRS)} for r in raw]
-    posture = session_posture(0.0, 90.0)
+    posture = session_posture(90.0, 90.0)
     py = StiffnessModel(ArmModel(0.30, 0.27, 0.07)).fit(
         [Trial(posture, s, stiffness=np.array(t["K"]) - k_e) for t, s in zip(muscle, sig)])
     x_cs = np.array([[g["a"], g["b"]] for g in data["groups"]]).ravel()
