@@ -7,7 +7,7 @@ Writes to <out_dir>:
                            posture quaternions) and the hand stiffness at the handle (model + empty-handle stiffness)
   calibration.json, run.json   mosaic/session_*.json with the model and log paths moved to <windows_out_dir>
   actions_calibration.txt, actions_run.txt   card presses for the pipeline runner (test/replay)
-Calibration: empty handle, relaxed, three efforts (Effort start capture; the perturbation program runs the pushes and
+Calibration: empty handle, relaxed, medium and max effort (Effort start capture; the perturbation program runs the steps and
 the trial ends with them), then fit; phases of the calibration mounting (biceps phase rises
 15 deg per unit sigma from -48.7 deg, triceps falls 10 deg per unit sigma from 149.2 deg). Run: a new mounting
 (relaxed -30 / 160 deg, both directions reversed), set with the Session trigger (relaxed, then tense), then 60 %
@@ -26,8 +26,8 @@ from stiffness_model import StiffnessModel  # noqa: E402
 
 TRUTH = {"biceps": (0.01, 0.12), "triceps": (0.01, 0.08), "elbow_flexors": (0.008, 0.10), "shoulder": (0.01, 0.04)}
 K_EMPTY = [[40.0, 5.0, 0.0], [5.0, 35.0, 0.0], [0.0, 0.0, 60.0]]
-LEVELS = {"empty": None, "relaxed": (0.0, 0.0), "effort30": (0.3, 0.2), "effort60": (0.6, 0.7), "effort100": (1.0, 1.0)}
-TRIAL_S, GAP_S, FIRST_S = 62.0, 4.0, 4.0  # a trial of perturbation.cpp takes about 58 s
+LEVELS = {"empty": None, "relaxed": (0.0, 0.0), "medium": (0.5, 0.45), "max": (1.0, 1.0), "effort60": (0.6, 0.7)}
+TRIAL_S, GAP_S, FIRST_S = 44.0, 4.0, 4.0  # a trial of perturbation.cpp takes about 40 s
 # robot offset, robot state, slave command: moved for the test (Windows reserves ranges around 50900 on some PCs and
 # IPsec uses 4500)
 PORTS = {50900: 51900, 50910: 51910, 4500: 51500}
@@ -78,15 +78,16 @@ def main():
 
     calib_mount = (-48.7, 15.0, 149.2, -10.0)
     windows, actions, t = [], [], FIRST_S
-    for label, code in (("empty", -1), ("relaxed", 0), ("effort30", 0.3), ("effort60", 0.6), ("effort100", 1)):
+    for label, code in (("empty", -1), ("relaxed", 0), ("medium", 0.5), ("max", 1)):
         windows.append(window(t - GAP_S / 2, t + TRIAL_S + GAP_S / 2, label, calib_mount))
-        actions += [f"{t:.1f} capture Effort {label}", f"{t + TRIAL_S:.1f} stop Effort"]
+        # the Trigger card stops the capture by itself after its capture duration (default 5 s)
+        actions += [f"{t:.1f} capture Effort {label}", f"{t + 5.0:.1f} stop Effort"]
         t += TRIAL_S + GAP_S
     actions += [f"{t:.1f} capture Effort fit", f"{t + 1:.1f} stop Effort"]
     calib_end = t + 4.0
 
     run_mount = (-30.0, -15.0, 160.0, 10.0)
-    run = [window(0.0, 10.0, "relaxed", run_mount), window(10.0, 18.0, "effort100", run_mount),
+    run = [window(0.0, 10.0, "relaxed", run_mount), window(10.0, 18.0, "max", run_mount),
            window(18.0, 32.0, "effort60", run_mount), window(32.0, 46.0, "effort60", run_mount, second)]
     run_actions = ["4 capture Session relaxed", "9 stop Session", "12 capture Session tense", "17 stop Session"]
     checks = [{"t0": 22.0, "t1": 30.0, "posture": [0.0, 90.0], "sigma": LEVELS["effort60"]},

@@ -27,7 +27,7 @@
   },
   "Effort": {
     "Type": "Trigger",
-    "Params": ["empty:-1", "relaxed:0", "effort30:0.3", "effort60:0.6", "effort100:1", "fit:9"]
+    "Params": ["empty:-1", "relaxed:0", "medium:0.5", "max:1", "fit:9"]
   },
   "Robot": {
     "Type": "UDPClient",

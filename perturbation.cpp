@@ -3,11 +3,12 @@
 // Measures the operator's arm stiffness at the FR3 handle. Single self-contained file.
 //
 // The robot moves to the home pose of the teleoperation slave, then holds the handle with a known Cartesian
-// impedance (K_r = 500 N/m) and runs the perturbation protocol of J. Zeynalli's thesis (calibration phase): per
-// trial, 12 pushes of 5 cm in random order, the 6 axial directions (+-x, +-y, +-z) and 6 diagonals drawn from the
-// 12 diagonals in the xy, xz and yz planes. Each push: the equilibrium moves 5 cm in 1 s (raised cosine), holds 1 s,
-// returns in 1 s, then a random rest of 1.5-2 s, so the operator cannot anticipate the next push (about 60 s per
-// trial). With the hand on the handle the handle moves only part of each push: K_h dx = K_r (dx_d - dx), see
+// impedance (K_r = 1000 N/m) and displaces it by small fast steps, as in the endpoint-stiffness literature (small
+// displacements, fast, before the operator can give way or react): per trial, 12 steps of 15 mm in random order, the
+// 6 axial directions (+-x, +-y, +-z) and 6 diagonals drawn from the 12 diagonals in the xy, xz and yz planes (the
+// directions of J. Zeynalli's protocol; his 5 cm pushes over 1 s let the operator follow the push, run of 11-17).
+// Each step: the equilibrium moves 15 mm in 0.15 s (raised cosine), holds 1 s, returns in 0.15 s, then a random rest
+// of 1.5-2.5 s, so the operator cannot anticipate the next step (about 40 s per trial). With the hand on the handle the handle moves only part of each push: K_h dx = K_r (dx_d - dx), see
 // analyze_perturbation.py. A console trial whose label starts with "rot_" turns the equilibrium orientation instead
 // (+-20 deg about x, y, z of the base frame through the end-effector point), with a lower rotational K_r.
 // The elastography sensors are logged by a separate program (sensors.py); each trial's start and end are written
@@ -20,8 +21,8 @@
 // Ctrl+C or "q" + Enter stops the robot.
 //
 // Default (MOSAIC, mosaic/session_calibration.json): the Effort card of MOSAIC starts each trial. Its Start capture
-// sends the operator state as one double to UDP port 50900 (-1 empty handle, 0 relaxed, 0..1 effort; 9 = fit is
-// ignored); the program runs one trial of 12 pushes and prints each push. A start while a trial runs is ignored.
+// sends the operator state as one double to UDP port 50900 (-1 empty handle, 0 relaxed, 0.5 medium, 1 max; 9 = fit is
+// ignored); the program runs one trial of 12 steps and prints each step. A start while a trial runs is ignored.
 // The robot state goes to 127.0.0.1:50910 at 100 Hz as 17 doubles: t, x, y, z, x_d, y_d, z_d, F_ext x, y, z
 // (O_F_ext_hat_K), q_w, q_x, q_y, q_z, K_r, phase (0 idle, 1 rest, 2 push out, 3 hold, 4 return), trial number
 // (0 between trials). The console only takes "q".
@@ -96,15 +97,14 @@ constexpr std::array<double, 7> kJointVelocityGuardLimitsRadps = {2.0, 1.0, 1.5,
 constexpr double kJointVelocityGuardStopRatio = 0.85;
 
 // ---- Perturbation test ----
-// Zeynalli protocol: K_r as in Teleoperate_calibrate.cpp; at 5 cm the robot force stays below 25 N, under the 35 N
-// collision threshold of the slave.
-constexpr double kRobotTranslationalStiffness = 500.0;  // N/m, known K_r for the robot-as-spring estimate
+// At 15 mm the robot force stays below 15 N, under the 35 N collision threshold of the slave.
+constexpr double kRobotTranslationalStiffness = 1000.0;  // N/m, known K_r for the robot-as-spring estimate
 constexpr double kRobotRotationalStiffness = kBaselineRotationalStiffness;  // holds the handle orientation
-constexpr double kStepAmplitudeM = 0.05;
-constexpr double kStepRampS = 1.0;     // raised-cosine ramp to and from the offset
+constexpr double kStepAmplitudeM = 0.015;
+constexpr double kStepRampS = 0.15;    // raised-cosine ramp to and from the offset
 constexpr double kStepHoldS = 1.0;
-constexpr double kRestMinS = 1.5;      // random rest between pushes, so the operator cannot anticipate
-constexpr double kRestMaxS = 2.0;
+constexpr double kRestMinS = 1.5;      // random rest between steps, so the operator cannot anticipate
+constexpr double kRestMaxS = 2.5;
 constexpr int kAxialSteps = 6;         // +-x, +-y, +-z
 constexpr int kDiagonalSteps = 6;      // drawn from the 12 diagonals of the xy, xz and yz planes
 constexpr int kStepRepetitions = 2;    // rotation trials: each of the 6 directions this many times
@@ -130,7 +130,7 @@ constexpr double kFitCode = 9.0;
 constexpr int kStateDecimation = 10;  // 1 kHz control -> 100 Hz to MOSAIC (it hands every packet to its own task)
 
 // Safety: end the control loop when exceeded
-constexpr double kAbortPositionErrorM = 0.08;  // above the 5 cm push
+constexpr double kAbortPositionErrorM = 0.05;
 constexpr double kAbortSpeedMps = 0.5;
 constexpr double kAbortOrientationErrorRad = 35.0 * kPi / 180.0;  // above the 20 deg step
 constexpr double kAbortAngularSpeedRadps = 2.0;
@@ -425,6 +425,12 @@ std::string label_for_code(double code) {
   if (std::abs(code) < 1e-9) {
     return "relaxed";
   }
+  if (std::abs(code - 0.5) < 1e-9) {
+    return "medium";
+  }
+  if (std::abs(code - 1.0) < 1e-9) {
+    return "max";
+  }
   return "effort" + std::to_string(static_cast<int>(std::lround(code * 100.0)));
 }
 
@@ -600,7 +606,7 @@ int main(int argc, char** argv) {
     std::cout << "\n[TRIAL " << trial << "] " << label << ": " << steps.size()
               << (rotation ? " rotation steps of " + std::to_string(static_cast<int>(kRotationStepRad * 180.0 / kPi)) +
                                  " deg"
-                           : " pushes of " + std::to_string(static_cast<int>(kStepAmplitudeM * 100.0)) + " cm")
+                           : " steps of " + std::to_string(static_cast<int>(std::lround(kStepAmplitudeM * 1000.0))) + " mm")
               << ", about " << static_cast<int>(trial_duration(plan)) << " s. Hold the state, do not react.\n"
               << std::flush;
     // Stored after the plan is copied; the control callback reads it with a seq_cst load before the plan.
@@ -610,7 +616,7 @@ int main(int argc, char** argv) {
     while (!g_stop_requested && finished_trial.load() < trial) {
       const int step = current_step.load();
       if (step > printed) {
-        std::cout << "  " << (rotation ? "step " : "push ") << step + 1 << "/" << steps.size() << ": "
+        std::cout << "  step " << step + 1 << "/" << steps.size() << ": "
                   << step_name(plan[step]) << '\n'
                   << std::flush;
         printed = step;
@@ -706,8 +712,8 @@ int main(int argc, char** argv) {
     setDefaultBehavior(robot);
 
     std::cout << "[PERTURBATION] " << (console_mode ? "console trials" : "trials started from MOSAIC (port 50900)")
-              << " | K_r=" << kRobotTranslationalStiffness << " N/m | 12 pushes of " << kStepAmplitudeM * 100
-              << " cm per trial | logs in " << log_dir << '\n'
+              << " | K_r=" << kRobotTranslationalStiffness << " N/m | 12 steps of " << kStepAmplitudeM * 1000
+              << " mm per trial | logs in " << log_dir << '\n'
               << "WARNING: Franka will move to the initial pose. Do not hold the handle during this move. "
               << "Keep emergency stop accessible. Press Enter to continue..." << std::endl;
     std::cin.get();

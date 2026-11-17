@@ -45,17 +45,17 @@ def main():
     rows = [line.split(",") for line in (d / "robot_log" / "trials.csv").read_text().splitlines()[1:]]
     labels = [r[1] for r in rows]
     check("calibration: trials of the perturbation program",
-          labels == ["empty", "relaxed", "effort30", "effort60", "effort100"] and all(r[6] == "1" for r in rows),
+          labels == ["empty", "relaxed", "medium", "max"] and all(r[6] == "1" for r in rows),
           f"{labels}, completed {[r[6] for r in rows]}")
     session = json.loads(sorted((d / "logs" / "calibration").glob("calibration_*.json"))[-1].read_text())
     trials = session["trials"]
     windows = {w["level"]: w for w in sc["calibration"]["windows"]}
-    names = {-1: "empty", 0: "relaxed", 0.3: "effort30", 0.6: "effort60", 1: "effort100"}
+    names = {-1: "empty", 0: "relaxed", 0.5: "medium", 1: "max"}
     errs = []
     for t in trials:
         w = windows[names[round(t["code"], 1) if t["code"] > -0.5 else -1]]
         errs.append(rel(t["K"], w["K_hand"]) if t["K"] is not None else np.inf)
-    check("calibration: K per trial", len(trials) == 5 and max(errs) < 0.03
+    check("calibration: K per trial", len(trials) == 4 and max(errs) < 0.03
           and all(len(t["cycles"]) == 12 for t in trials),
           f"{len(trials)} trials, cycles {[len(t['cycles']) for t in trials]}, relative error vs simulated hand "
           + " ".join(f"{e:.3f}" for e in errs))

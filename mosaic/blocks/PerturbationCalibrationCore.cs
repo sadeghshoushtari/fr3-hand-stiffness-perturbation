@@ -13,7 +13,8 @@ namespace MOSAIC.Models.Elastography;
 /// </summary>
 /// <remarks>
 /// Trials: an Effort action starts a trial (code: -1 empty handle, 0 relaxed, 0..1 co-contraction level); the trial ends
-/// when the perturbation program reports the end of its trial (state value 16 back to 0) or at stop capture; code 9
+/// when the perturbation program reports the end of its trial (state value 16 back to 0); stop capture is then ignored
+/// (without the program's state, e.g. with a Stimulus block, stop capture ends the trial); code 9
 /// ("fit") fits the model to all trials of the session and writes the model file.
 /// Cycles: within a trial each push of the perturbation program (state value 15: 1 rest, 2 push out, 3 hold, 4 return)
 /// gives one perturbation: dx = mean handle position in the hold after <see cref="Options.CaptureSettleS"/> - mean in
@@ -252,8 +253,13 @@ public sealed class PerturbationCalibrationCore
             Log($"trial {Trials.Count + 1} started: {Label(c)}");
             return;
         }
-        if (_trialCode is not null)
-            CloseTrial();
+        if (_trialCode is null)
+            return;
+        // With the perturbation program the trial ends with the robot's trial: the Trigger card stops the capture by
+        // itself after its capture duration (default 5 s), long before the 12 pushes are done.
+        if (double.IsFinite(_lastRobotT))
+            return;
+        CloseTrial();
     }
 
     // --- cycles and trials ---
