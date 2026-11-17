@@ -27,7 +27,7 @@ COMMAND_PORT = 50601
 REARM_S = 60.0
 STATUS_S = 2.0
 NTP_SERVERS = ("ptbtime1.ptb.de", "time.windows.com", "pool.ntp.org")
-PAIRS = {"triceps": (8, 9), "biceps": (10, 11)}  # mounting of 11-05: clip A (ch0, ch1) triceps, clip B biceps
+PAIRS = {"triceps": (10, 11), "biceps": (8, 9)}  # mounting of 11-17: clip A (ch0, ch1) biceps, clip B (ch2, ch3) triceps
 
 
 def ntp_offset_s():

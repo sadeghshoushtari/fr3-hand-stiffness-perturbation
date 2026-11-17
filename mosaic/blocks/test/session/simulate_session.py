@@ -4,7 +4,7 @@ python simulate_session.py <scenario.json> calibration|run <out_dir> [<hand_file
 
 Plays the time windows of scenario.json (make_scenario.py) from its start:
   board   5 Hz, 12 doubles to 127.0.0.1:50500 (esp32_robot_stiffness features; pair phases of the window + 1.5 deg
-          noise; [8, 9] triceps cos/sin, [10, 11] biceps)
+          noise; [8, 9] biceps cos/sin, [10, 11] triceps)
   IMU     50 Hz, 8 floats to 127.0.0.1:50700 (upper-arm and forearm quaternions of the window's posture)
   hand    (calibration) the window's hand stiffness K_h (9 numbers, N/m) written to <hand_file>, which the
           perturbation program built against the libfranka stub (test/robot_stub) reads
@@ -70,7 +70,7 @@ def main():
             last["board"] = t
             counter += 1
             v = [2.0, float(counter), 0.0, 1.0, 50.0, 48.0, 52.0, 47.0, 0, 0, 0, 0]
-            for (ci, si), ph in (((10, 11), w["phase_deg"][0]), ((8, 9), w["phase_deg"][1])):
+            for (ci, si), ph in (((8, 9), w["phase_deg"][0]), ((10, 11), w["phase_deg"][1])):
                 p = math.radians(ph + rng.gauss(0, 1.5))
                 v[ci], v[si] = math.cos(p), math.sin(p)
             tx.sendto(struct.pack("<12d", *v), (LOCAL, 50500))

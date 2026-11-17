@@ -51,7 +51,7 @@ IMU posture.
 
 | Input | Content |
 |---|---|
-| features | 12 doubles of `esp32_robot_stiffness` ([8, 9] cos/sin of clip A = triceps, [10, 11] clip B = biceps) |
+| features | 12 doubles of `esp32_robot_stiffness` ([8, 9] cos/sin of clip A = biceps, [10, 11] clip B = triceps; mounting of 11-17) |
 | IMU | 8 values: unit quaternions (w, x, y, z) of upper arm and forearm in the robot base frame |
 | Session | Trigger with `relaxed:0`, `tense:1`: start/stop capture sets the relaxed reference / the index direction |
 

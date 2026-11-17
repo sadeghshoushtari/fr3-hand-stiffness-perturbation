@@ -30,9 +30,10 @@ from stiffness_identification import stiffness_from_spring, stiffness_from_wrenc
 
 PRE_S = (-0.3, -0.05)
 RAMP_UP = 2
-# esp32_robot_stiffness output: [8, 9] cos/sin of pair ch0->ch1, [10, 11] pair ch2->ch3. Mounting of 11-05:
-# clip A (ch0, ch1) on the triceps, clip B (ch2, ch3) on the biceps.
-PAIRS = {"triceps": (8, 9), "biceps": (10, 11)}
+# esp32_robot_stiffness output: [8, 9] cos/sin of pair ch0->ch1, [10, 11] pair ch2->ch3. Mounting of 11-17:
+# clip A (ch0, ch1) on the biceps, clip B (ch2, ch3) on the triceps (11-05 to 11-16 the other way round: logs of
+# that period need the old assignment).
+PAIRS = {"triceps": (10, 11), "biceps": (8, 9)}
 AMPS = slice(4, 8)
 
 

@@ -51,7 +51,7 @@ public sealed class StiffnessProjectionModel
         public double[] Scale { get; set; } = { 1.0, 1.0 };
         public double[] RelaxedPhaseDeg { get; set; } = { 0.0, 0.0 };
         public double[] Direction { get; set; } = { -1.0, -1.0 };
-        public int[][] Features { get; set; } = { new[] { 10, 11 }, new[] { 8, 9 } };
+        public int[][] Features { get; set; } = { new[] { 8, 9 }, new[] { 10, 11 } };  // biceps: clip A, triceps: clip B (11-17)
     }
 
     private readonly double _gamma;

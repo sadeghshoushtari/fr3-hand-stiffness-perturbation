@@ -9,8 +9,8 @@ only computes
   u_g     =  a_g + b_g sum_p w_gp sigma_p,   f = F_max u,   k = gamma f / l0
   K_j     =  J_m^T diag(k) J_m + sum_i f_i d2l_i/dq2   (no load at the hand)
   K_c     =  (J K_j^-1 J^T)^-1   in the robot base frame, N/m
-Feature vector: esp32_robot_stiffness output (12 doubles); [8, 9] cos/sin of the clip A pair (triceps since 11-05),
-[10, 11] clip B (biceps). A pair is unusable when its cos/sin are 0 (amplitude below the firmware threshold).
+Feature vector: esp32_robot_stiffness output (12 doubles); [8, 9] cos/sin of the clip A pair (biceps since 11-17),
+[10, 11] clip B (triceps). A pair is unusable when its cos/sin are 0 (amplitude below the firmware threshold).
 """
 
 import json
@@ -22,7 +22,7 @@ from stiffness_model import GAMMA
 
 FORMAT = "stiffness_projection/1"
 FORMAT2 = "stiffness_projection/2"
-FEATURES = {"biceps": (10, 11), "triceps": (8, 9)}
+FEATURES = {"biceps": (8, 9), "triceps": (10, 11)}
 PAIRS = ("biceps", "triceps")
 OUTPUT = ("kxx", "kyy", "kzz", "kxy", "kxz", "kyz", "k_volume", "sigma_biceps", "sigma_triceps", "valid")
 

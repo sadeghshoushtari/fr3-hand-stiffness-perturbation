@@ -35,7 +35,7 @@ from pathlib import Path
 
 REARM_S = 60.0
 STATUS_S = 2.0
-PAIRS = {"triceps": (8, 9), "biceps": (10, 11)}  # mounting of 11-05: clip A (ch0, ch1) triceps, clip B biceps
+PAIRS = {"triceps": (10, 11), "biceps": (8, 9)}  # mounting of 11-17: clip A (ch0, ch1) biceps, clip B (ch2, ch3) triceps
 
 
 def open_port(path):
