@@ -45,10 +45,12 @@ public sealed class StiffnessProjectionModel
         "k_translation_cmd", "k_rotation_cmd",
     };
 
-    /// <summary>Linear map of the mean sigma to an overall stiffness, clipped to [Min, Max].</summary>
+    /// <summary>Linear map of the mean sigma to an overall stiffness (Line), clipped to [Min, Max] for the slave
+    /// (Eval).</summary>
     public sealed record CommandMap(double C0, double C1, double Min, double Max)
     {
-        public double Eval(double[] sigma) => Math.Clamp(C0 + C1 * 0.5 * (sigma[0] + sigma[1]), Min, Max);
+        public double Line(double[] sigma) => C0 + C1 * 0.5 * (sigma[0] + sigma[1]);
+        public double Eval(double[] sigma) => Math.Clamp(Line(sigma), Min, Max);
     }
 
     /// <summary>One muscle group: members (muscle indices), driver weights over <see cref="Pairs"/>, u = a + b drive.</summary>

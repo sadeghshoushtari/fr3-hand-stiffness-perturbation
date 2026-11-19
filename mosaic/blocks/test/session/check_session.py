@@ -79,11 +79,11 @@ def main():
           f"trials {[t['number'] for t in val]}, relative error predicted vs measured "
           + " ".join(f"{e:.3f}" for e in verr))
     for name, tol in (("translation", 0.15), ("rotation", 0.05)):
-        e = [abs(t["validation"][f"{name}_command"] - t["validation"][f"{name}_measured"])
-             / abs(t["validation"][f"{name}_measured"]) if t["validation"].get(f"{name}_command") is not None else np.inf
+        e = [abs(t["validation"][f"{name}_predicted"] - t["validation"][f"{name}_measured"])
+             / abs(t["validation"][f"{name}_measured"]) if t["validation"].get(f"{name}_predicted") is not None else np.inf
              for t in val]
-        check(f"calibration: validation of the {name} command", len(e) == 1 and max(e) < tol,
-              f"command {val[0]['validation'].get(f'{name}_command')}, measured {val[0]['validation'].get(f'{name}_measured')}"
+        check(f"calibration: validation of the {name} command map", len(e) == 1 and max(e) < tol,
+              f"command {val[0]['validation'].get(f'{name}_predicted')}, measured {val[0]['validation'].get(f'{name}_measured')}"
               f", relative difference {max(e) if e else float('nan'):.3f}")
     cmd = data.get("commands") or {}
     rot = cmd.get("rotation") or {}

@@ -46,7 +46,8 @@ Step timing (relative to the robot's home pose), about 43 s per trial:
 The handle settles 0.3 s after a translation ramp (run of 2026-11-17), so the hold is read from 0.35 s after the ramp.
 
 The random rests stop the operator from anticipating the next step. At 15 mm the robot force stays below 15 N, under
-the 35 N collision threshold of the slave. The operator sits with the trunk against the backrest (best strapped to
+the 35 N collision threshold of the slave. The operator's elbow rests on a support at the height of the posture (see mosaic/SESSION_PIPELINES.md), and
+the trunk is against the backrest (best strapped to
 the chair), so that the measurement is of the arm and not of the whole body; the shoulder cannot be stiffened at will
 and stays part of the measured hand stiffness, as in the literature.
 

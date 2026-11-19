@@ -75,7 +75,12 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
 5. One trial per operator state, in this order: empty, relaxed, medium, max.
    - empty: nobody touches the handle. Others: the operator holds the handle in the session posture (upper arm
      horizontal pointing forward, forearm vertical up, elbow 90 deg; `posture:fixed;90;90`) and keeps the state (relaxed, or co-contraction medium / maximal) for the whole trial
-     without reacting to the steps; trunk against the backrest (best strapped to the chair).
+     without reacting to the steps; trunk against the backrest (best strapped to the chair); the elbow rests on a
+     support at the height of the posture, so the shoulder does not carry the arm, and the hand holds the handle
+     without pressing on it. Without the support (2026-11-19) the operator pressed 8-26 N on the handle, more in
+     some trials than in others, and the sensor phases did not follow the stiffness; with it, 4-11 N, and the mean
+     index followed the overall stiffness (r = 0.91 over 6 trials). For max, reach full contraction before Start
+     capture and hold it.
    - Effort card: select the state, press Start capture. The robot starts at once: Terminal 2 prints
      `[TRIAL n] <state>: 12 steps of 15 mm and 6 turns of 20 deg, about 43 s` and then `step 1/18: +x` ...
      `step 18/18` (turns are named `+rx` ...).
@@ -86,8 +91,9 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
 6. The fit runs by itself when the max trial is done: Terminal 3 prints `full effort trial done: fitting the
    model`, the relaxed reference, the direction of each pair, the fitted parameters and `model written to ...`.
    It also prints the two command maps (`translation command = c0 + c1 * mean sigma`, `rotation command = ...`).
-   Then one validation trial, as above: medium. Terminal 3 prints `validation trial n (...)`: both commands
-   predicted from the trial's phases vs measured, and the 3x3 model vs measured (session file, `validation`).
+   Then validation trials, as above: relaxed, medium, max. Terminal 3 prints `validation trial n (...)`: both
+   overall stiffnesses predicted from the trial's phases vs measured (the prediction before the slave's range; the
+   capped command is named when the range cuts it), and the 3x3 model vs measured (session file, `validation`).
 7. Vibrator card: None, then Apply to device (= vibrator off). Terminal 2: q and Enter. Terminal 1: q and Enter.
 
 Where the results go (`<thesis>` = `~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis`):

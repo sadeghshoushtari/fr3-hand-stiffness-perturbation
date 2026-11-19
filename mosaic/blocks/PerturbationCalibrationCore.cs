@@ -121,10 +121,12 @@ public sealed class PerturbationCalibrationCore
     private readonly Dictionary<int, Validation> _validation = new();
     private double[,] _kEmpty = new double[3, 3], _kRotEmpty = new double[3, 3];
 
-    /// <summary>Validation trial: 3x3 model prediction vs measurement (translation), and the two overall commands
-    /// (mean of the diagonal) predicted vs measured.</summary>
+    /// <summary>Validation trial: 3x3 model prediction vs measurement (translation), and the two overall stiffnesses
+    /// (mean of the diagonal) predicted by the command maps before the slave's range is applied vs measured, with
+    /// the command the slave would get.</summary>
     private sealed record Validation(double[,] Predicted, double[,] Measured, double Error, double TranslationMeasured,
-        double TranslationPredicted, double? RotationMeasured, double? RotationPredicted);
+        double TranslationPredicted, double TranslationCommand, double? RotationMeasured, double? RotationPredicted,
+        double? RotationCommand);
     private readonly string _sessionStamp;
 
     public List<Trial> Trials { get; } = new();
@@ -478,14 +480,19 @@ public sealed class PerturbationCalibrationCore
                 }
             }
         double err = Math.Sqrt(num / Math.Max(den, 1e-12));
-        double tMeas = Overall(trial.K, _kEmpty), tPred = model.TranslationCommand?.Eval(sigma) ?? double.NaN;
+        double tMeas = Overall(trial.K, _kEmpty);
+        double tPred = model.TranslationCommand?.Line(sigma) ?? double.NaN;
+        double tCmd = model.TranslationCommand?.Eval(sigma) ?? double.NaN;
         double? rMeas = trial.KRot is null ? null : Overall(trial.KRot, _kRotEmpty);
-        double? rPred = model.RotationCommand?.Eval(sigma);
-        _validation[trial.Number] = new Validation(pred, meas, err, tMeas, tPred, rMeas, rPred);
+        double? rPred = model.RotationCommand?.Line(sigma), rCmd = model.RotationCommand?.Eval(sigma);
+        _validation[trial.Number] = new Validation(pred, meas, err, tMeas, tPred, tCmd, rMeas, rPred, rCmd);
+        static string Capped(double predicted, double? command, string format) =>
+            command is double c && Math.Abs(c - predicted) > 1e-9 ? $", slave command capped to {c.ToString(format)}" : "";
         Log($"validation trial {trial.Number} ({Label(trial.Code)}): sigma {sigma[0]:F2} {sigma[1]:F2}; "
-            + $"translation command {tPred:F0} N/m vs measured {tMeas:F0} N/m ({RelDiff(tPred, tMeas)}); "
+            + $"translation predicted {tPred:F0} N/m vs measured {tMeas:F0} N/m ({RelDiff(tPred, tMeas)}"
+            + $"{Capped(tPred, tCmd, "F0")}); "
             + (rMeas is double rm && rPred is double rp
-                ? $"rotation command {rp:F1} Nm/rad vs measured {rm:F1} Nm/rad ({RelDiff(rp, rm)}); "
+                ? $"rotation predicted {rp:F1} Nm/rad vs measured {rm:F1} Nm/rad ({RelDiff(rp, rm)}{Capped(rp, rCmd, "F1")}); "
                 : "no rotation command or measurement; ")
             + $"3x3 model: measured K diag {meas[0, 0]:F0} {meas[1, 1]:F0} {meas[2, 2]:F0}, predicted "
             + $"{pred[0, 0]:F0} {pred[1, 1]:F0} {pred[2, 2]:F0} N/m, relative error {err:F2}");
@@ -708,8 +715,10 @@ public sealed class PerturbationCalibrationCore
                 {
                     ["predicted_K"] = Mat(v.Predicted), ["measured_K_minus_empty"] = Mat(v.Measured),
                     ["relative_error"] = v.Error,
-                    ["translation_command"] = v.TranslationPredicted, ["translation_measured"] = v.TranslationMeasured,
-                    ["rotation_command"] = v.RotationPredicted, ["rotation_measured"] = v.RotationMeasured,
+                    ["translation_predicted"] = v.TranslationPredicted, ["translation_command"] = v.TranslationCommand,
+                    ["translation_measured"] = v.TranslationMeasured,
+                    ["rotation_predicted"] = v.RotationPredicted, ["rotation_command"] = v.RotationCommand,
+                    ["rotation_measured"] = v.RotationMeasured,
                 } : _validationTrials.Contains(t.Number) ? new JsonObject() : null,
                 ["cycles"] = new JsonArray(t.Cycles.Select(c => (JsonNode)new JsonObject
                 {
