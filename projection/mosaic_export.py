@@ -174,12 +174,21 @@ def stiffness(data, sigma, geo=None):
     return 0.5 * (kc + kc.T)
 
 
+SLAVE_TRANSLATION_RANGE = (300.0, 700.0)  # N/m, teleoperation Slave/slave_config.hpp
+SLAVE_ROTATION_RANGE = (20.0, 40.0)  # Nm/rad: slave gain 40-80, half of it acts for small angles
+
+
 def command(data, name, sigma):
-    """Overall stiffness command of the model file's "commands" map (None without one)."""
+    """Slave command of the model file's "commands" map (None without one): the operator's overall stiffness
+    c0 + c1 * mean sigma, its span human_low..human_high mapped linearly onto min..max and held at the ends."""
     c = (data.get("commands") or {}).get(name)
     if not c:
         return None
-    return float(np.clip(c["c0"] + c["c1"] * 0.5 * (sigma["biceps"] + sigma["triceps"]), c["min"], c["max"]))
+    if c["human_high"] <= c["human_low"]:
+        return float(c["min"])
+    line = c["c0"] + c["c1"] * 0.5 * (sigma["biceps"] + sigma["triceps"])
+    u = float(np.clip((line - c["human_low"]) / (c["human_high"] - c["human_low"]), 0.0, 1.0))
+    return float(c["min"] + (c["max"] - c["min"]) * u)
 
 
 def output(kc, sigma, valid, data=None):
@@ -188,8 +197,8 @@ def output(kc, sigma, valid, data=None):
     k_t = command(data, "translation", sigma)
     k_r = command(data, "rotation", sigma)
     return [kc[0, 0], kc[1, 1], kc[2, 2], kc[0, 1], kc[0, 2], kc[1, 2], vol, sigma["biceps"], sigma["triceps"],
-            1.0 if valid else 0.0, float(np.clip(vol, 50.0, 800.0)) if k_t is None else k_t,
-            0.0 if k_r is None else k_r]
+            1.0 if valid else 0.0, float(np.clip(vol, *SLAVE_TRANSLATION_RANGE)) if k_t is None else k_t,
+            SLAVE_ROTATION_RANGE[0] if k_r is None else k_r]
 
 
 class Projection:

@@ -147,11 +147,17 @@ def main():
         s = slave[(slave[:, 0] > c["t0"]) & (slave[:, 0] < c["t1"])]
         sbar = 0.5 * (c["sigma"][0] + c["sigma"][1])
         k_rot_true = float(np.mean(sc["k_rot_base"])) * (1 + 3 * sbar)
+        cr = data["commands"]["rotation"]
+        exp_rot = cr["min"] + (cr["max"] - cr["min"]) * float(np.clip(
+            (k_rot_true - cr["human_low"]) / (cr["human_high"] - cr["human_low"]), 0.0, 1.0))
+        in_range = all(data["commands"][n]["min"] <= got[i] <= data["commands"][n]["max"]
+                       for n, i in (("translation", 10), ("rotation", 11)))
         check(f"run: two commands to the slave at posture {c['posture']}", len(s) > 20 and s.shape[1] == 3
               and abs(np.mean(s[:, 1]) - got[10]) < 0.01 * got[10] and abs(np.mean(s[:, 2]) - got[11]) < 0.01 * got[11]
-              and abs(got[11] - k_rot_true) < 0.08 * k_rot_true,
-              f"translation {np.mean(s[:, 1]):.1f} N/m, rotation {np.mean(s[:, 2]):.2f} Nm/rad "
-              f"(simulated hand {k_rot_true:.2f} Nm/rad)")
+              and abs(got[11] - exp_rot) < 0.08 * (cr["max"] - cr["min"]) and in_range,
+              f"translation {np.mean(s[:, 1]):.1f} N/m, rotation {np.mean(s[:, 2]):.2f} Nm/rad (simulated hand "
+              f"{k_rot_true:.2f} Nm/rad, span {cr['human_low']:.2f}-{cr['human_high']:.2f} mapped onto "
+              f"{cr['min']}-{cr['max']}: {exp_rot:.2f}); within the slave ranges: {in_range}")
     print("ALL CHECKS PASSED" if not failures else f"{len(failures)} CHECK(S) FAILED")
     sys.exit(1 if failures else 0)
 

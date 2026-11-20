@@ -27,7 +27,7 @@ slave), which must never run at the same time.
 | Calibration | PerturbationCalibration | custom | per step: dx, dF; per trial: identified K (the trial ends when the robot's trial ends); fit after the first max trial: relaxed reference, direction and scale per pair, model parameters, writes the model file; validation trials after it: predicted vs measured K |
 | Session | Trigger | yes | run: relaxed (0) and tense (1) captures set the reference and direction of this mounting |
 | Stiffness | StiffnessProjection | custom | features + posture (IMU, else session posture) -> 3x3 hand stiffness |
-| Commands | Projector | yes | selects the two commands (elements 10, 11: translational N/m, rotational Nm/rad; clipped in the block to the calibration's ranges, default 50-800 N/m and 1-40 Nm/rad) |
+| Commands | Projector | yes | selects the two commands (elements 10, 11): the operator's overall stiffness with its relaxed..max span mapped linearly onto the slave's range, 300-700 N/m and 20-40 Nm/rad (slave gain 40-80, of which half acts), as the Virtuose trigger's 0..1 is mapped onto 300-700 N/m |
 | ToSlave | UDPClient | yes | the two stiffness commands to the slave, port 4500 |
 | ToMonitor | UDPClient | yes | full output to port 50510 (watch_stiffness.py) |
 

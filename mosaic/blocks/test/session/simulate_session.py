@@ -66,7 +66,12 @@ def main():
             hand = (w["K_hand"], w.get("K_hand_rot"))
             tmp = hand_file.with_suffix(".tmp")
             tmp.write_text(" ".join(repr(v) for k in hand if k is not None for row in k for v in row) + "\n")
-            tmp.replace(hand_file)
+            for attempt in range(50):  # Windows refuses the rename while the robot stub has the file open
+                try:
+                    tmp.replace(hand_file)
+                    break
+                except PermissionError:
+                    time.sleep(0.002)
         if t - last["board"] >= 0.2:
             last["board"] = t
             counter += 1

@@ -39,7 +39,8 @@ namespace MOSAIC.Models.Elastography;
 /// the effort code over the trials; index per trial, scale = its largest value, sigma = max(index, 0) / scale;
 /// (a_g, b_g) fitted with <see cref="StiffnessFit.Fit"/>. Commands: the overall translational and rotational stiffness
 /// of each trial (mean of the diagonal of K - K_empty and of K_rot - K_rot,empty) fitted by least squares as
-/// c0 + c1 * mean sigma (StiffnessProjectionModel.CommandMap).
+/// c0 + c1 * mean sigma; the line at the relaxed and the max trials is mapped onto the slave's range
+/// (StiffnessProjectionModel.CommandMap).
 /// Robot state vector (perturbation.cpp): t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r, phase,
 /// trial number, desired rotation offset x, y, z, rotational K_r (Nm/rad), step kind (0 translation, 1 rotation).
 /// </remarks>
@@ -68,8 +69,10 @@ public sealed class PerturbationCalibrationCore
         public string? SingleIndex { get; set; }
         public double RestSettleS { get; set; } = 0.4;     // rests of 0.8-1.2 s
         public double CaptureSettleS { get; set; } = 0.35;  // the handle settles 0.3 s after a 15 mm ramp (11-17)
-        public double[] TranslationCommandRange { get; set; } = { 50.0, 800.0 };  // N/m
-        public double[] RotationCommandRange { get; set; } = { 1.0, 40.0 };       // Nm/rad
+        public double[] TranslationCommandRange { get; set; } =
+            (double[])StiffnessProjectionModel.SlaveTranslationRange.Clone();  // N/m
+        public double[] RotationCommandRange { get; set; } =
+            (double[])StiffnessProjectionModel.SlaveRotationRange.Clone();     // Nm/rad
         public int MinCycles { get; set; } = 3;
     }
 
@@ -487,7 +490,7 @@ public sealed class PerturbationCalibrationCore
         double? rPred = model.RotationCommand?.Line(sigma), rCmd = model.RotationCommand?.Eval(sigma);
         _validation[trial.Number] = new Validation(pred, meas, err, tMeas, tPred, tCmd, rMeas, rPred, rCmd);
         static string Capped(double predicted, double? command, string format) =>
-            command is double c && Math.Abs(c - predicted) > 1e-9 ? $", slave command capped to {c.ToString(format)}" : "";
+            command is double c ? $", slave command {c.ToString(format)}" : "";
         Log($"validation trial {trial.Number} ({Label(trial.Code)}): sigma {sigma[0]:F2} {sigma[1]:F2}; "
             + $"translation predicted {tPred:F0} N/m vs measured {tMeas:F0} N/m ({RelDiff(tPred, tMeas)}"
             + $"{Capped(tPred, tCmd, "F0")}); "
@@ -505,9 +508,10 @@ public sealed class PerturbationCalibrationCore
     private static string RelDiff(double predicted, double measured) =>
         $"{(predicted - measured) / Math.Max(Math.Abs(measured), 1e-9) * 100:+0;-0} %";
 
-    /// <summary>Least-squares line c0 + c1 * x through the trials; null with fewer than two distinct x.</summary>
+    /// <summary>Least-squares line c0 + c1 * x through the trials, with the operator's span from the line at the mean
+    /// x of the relaxed (code 0) and of the max (code 1) trials; null with fewer than two distinct x.</summary>
     private static StiffnessProjectionModel.CommandMap? FitCommand(IReadOnlyList<double> x, IReadOnlyList<double> y,
-        double[] range)
+        IReadOnlyList<double> codes, double[] range)
     {
         if (x.Count < 2)
             return null;
@@ -519,8 +523,15 @@ public sealed class PerturbationCalibrationCore
         }
         if (sxx < 1e-9)
             return null;
-        double c1 = sxy / sxx;
-        return new StiffnessProjectionModel.CommandMap(my - c1 * mx, c1, range[0], range[1]);
+        double c1 = sxy / sxx, c0 = my - c1 * mx;
+        double MeanX(Func<double, bool> code, double fallback)
+        {
+            var xs = Enumerable.Range(0, x.Count).Where(i => code(codes[i])).Select(i => x[i]).ToList();
+            return xs.Count > 0 ? xs.Average() : fallback;
+        }
+        double low = c0 + c1 * MeanX(c => Math.Abs(c) < 1e-6, x.Min());
+        double high = c0 + c1 * MeanX(c => c > 0.999, x.Max());
+        return new StiffnessProjectionModel.CommandMap(c0, c1, range[0], range[1], low, high);
     }
 
     private static double[,] MeanMatrix(IReadOnlyList<double[,]> ks)
@@ -632,15 +643,19 @@ public sealed class PerturbationCalibrationCore
                                                   && !_validationTrials.Contains(t.Number)).Select(t => t.KRot!).ToList());
         var sbar = fitTrials.Select(f => 0.5 * (f.Sigma[0] + f.Sigma[1])).ToList();
         var kt = usable.Select(t => Overall(t.K!, kEmpty)).ToList();
-        model.TranslationCommand = FitCommand(sbar, kt, _o.TranslationCommandRange);
+        var codes = usable.Select(t => t.Code).ToList();
+        model.TranslationCommand = FitCommand(sbar, kt, codes, _o.TranslationCommandRange);
         var rotIdx = Enumerable.Range(0, usable.Count).Where(i => usable[i].KRot is not null).ToList();
         var kr = rotIdx.Select(i => Overall(usable[i].KRot!, _kRotEmpty)).ToList();
-        model.RotationCommand = FitCommand(rotIdx.Select(i => sbar[i]).ToList(), kr, _o.RotationCommandRange);
+        model.RotationCommand = FitCommand(rotIdx.Select(i => sbar[i]).ToList(), kr, rotIdx.Select(i => codes[i]).ToList(),
+            _o.RotationCommandRange);
         string Line(string name, StiffnessProjectionModel.CommandMap? c, List<double> x, List<double> y, string unit,
             string fmt) => c is null
             ? $"fit: {name} command: not enough trials with a {name}al stiffness"
             : $"fit: {name} command = {c.C0.ToString(fmt, CultureInfo.InvariantCulture)} + "
-              + $"{c.C1.ToString(fmt, CultureInfo.InvariantCulture)} * mean sigma {unit}, clipped to {c.Min}-{c.Max}; "
+              + $"{c.C1.ToString(fmt, CultureInfo.InvariantCulture)} * mean sigma {unit}; slave command: "
+              + $"{c.HumanLow.ToString(fmt, CultureInfo.InvariantCulture)}-{c.HumanHigh.ToString(fmt, CultureInfo.InvariantCulture)}"
+              + $" {unit} mapped onto {c.Min}-{c.Max}; "
               + "per trial (mean sigma: measured, line) " + string.Join(", ", x.Select((v, i) =>
                   $"{v:F2}: {y[i].ToString(fmt, CultureInfo.InvariantCulture)}, "
                   + $"{(c.C0 + c.C1 * v).ToString(fmt, CultureInfo.InvariantCulture)}"));

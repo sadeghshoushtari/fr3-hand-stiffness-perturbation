@@ -25,10 +25,11 @@ namespace MOSAIC.Models.Elastography;
 ///   sigma = clip(max(index, 0) / scale, 0, sigma_max); u_g = a_g + b_g sum_p w_gp sigma_p; f = F_max u; k = gamma f / l0;
 ///   K_j = J_m^T diag(k) J_m + sum_i f_i d2l_i/dq2; K_c = (J K_j^-1 J^T)^-1.
 /// Output: kxx, kyy, kzz, kxy, kxz, kyz, k_volume (cube root of det), sigma_biceps, sigma_triceps, valid,
-/// k_translation_cmd (N/m), k_rotation_cmd (Nm/rad). The two commands are the operator's overall translational and
-/// rotational stiffness (mean of the diagonal) from the calibration's linear maps over the mean sigma,
-/// clip(c0 + c1 (sigma_biceps + sigma_triceps) / 2, min, max) ("commands" of the model file); without them the
-/// translational command is clip(k_volume, 50, 800) and the rotational one 0 (no command).
+/// k_translation_cmd (N/m), k_rotation_cmd (Nm/rad). The two commands are the slave's stiffness: the operator's overall
+/// translational and rotational stiffness (mean of the diagonal), c0 + c1 (sigma_biceps + sigma_triceps) / 2 from
+/// the calibration, with its relaxed..max span mapped linearly onto the slave's range (default 300-700 N/m and
+/// 20-40 Nm/rad; "commands" of the model file, see CommandMap); without them the translational command is
+/// clip(k_volume, 300, 700) and the rotational one 20.
 /// A vector without a usable phase (cos = sin = 0) or with K_j not positive definite repeats the last valid
 /// output with valid = 0 (all zeros before the first valid one).
 /// </remarks>
@@ -45,13 +46,22 @@ public sealed class StiffnessProjectionModel
         "k_translation_cmd", "k_rotation_cmd",
     };
 
-    /// <summary>Linear map of the mean sigma to an overall stiffness (Line), clipped to [Min, Max] for the slave
-    /// (Eval).</summary>
-    public sealed record CommandMap(double C0, double C1, double Min, double Max)
+    /// <summary>Overall stiffness of the operator, Line = C0 + C1 * mean sigma (N/m or Nm/rad, fitted to the
+    /// calibration trials), and the slave command, Eval: the operator's span [HumanLow, HumanHigh] (Line at the relaxed
+    /// and the max trials) mapped linearly onto the slave's range [Min, Max] and held at its ends. Without a span
+    /// (HumanHigh not above HumanLow), the command is Min.</summary>
+    public sealed record CommandMap(double C0, double C1, double Min, double Max, double HumanLow, double HumanHigh)
     {
         public double Line(double[] sigma) => C0 + C1 * 0.5 * (sigma[0] + sigma[1]);
-        public double Eval(double[] sigma) => Math.Clamp(Line(sigma), Min, Max);
+        public double Eval(double[] sigma) => HumanHigh > HumanLow
+            ? Min + (Max - Min) * Math.Clamp((Line(sigma) - HumanLow) / (HumanHigh - HumanLow), 0.0, 1.0)
+            : Min;
     }
+
+    /// <summary>Slave range (teleoperation repository, Slave/slave_config.hpp): translational 300-700 N/m; rotational
+    /// gain 40-80, i.e. 20-40 Nm/rad (the slave's quaternion orientation law gives half its gain for small angles).
+    /// Used when the model file has no command maps.</summary>
+    public static readonly double[] SlaveTranslationRange = { 300.0, 700.0 }, SlaveRotationRange = { 20.0, 40.0 };
 
     /// <summary>One muscle group: members (muscle indices), driver weights over <see cref="Pairs"/>, u = a + b drive.</summary>
     public sealed record Group(string Name, int[] Members, double[] Weights, double A, double B);
@@ -181,7 +191,8 @@ public sealed class StiffnessProjectionModel
             static CommandMap? Map(JsonElement c, string name) =>
                 c.TryGetProperty(name, out var m) && m.ValueKind == JsonValueKind.Object
                     ? new CommandMap(m.GetProperty("c0").GetDouble(), m.GetProperty("c1").GetDouble(),
-                        m.GetProperty("min").GetDouble(), m.GetProperty("max").GetDouble())
+                        m.GetProperty("min").GetDouble(), m.GetProperty("max").GetDouble(),
+                        m.GetProperty("human_low").GetDouble(), m.GetProperty("human_high").GetDouble())
                     : null;
             TranslationCommand = Map(cmds, "translation");
             RotationCommand = Map(cmds, "rotation");
@@ -237,7 +248,8 @@ public sealed class StiffnessProjectionModel
         _last = new[]
         {
             kc[0, 0], kc[1, 1], kc[2, 2], kc[0, 1], kc[0, 2], kc[1, 2], volume, sigma[0], sigma[1], 1.0,
-            TranslationCommand?.Eval(sigma) ?? Math.Clamp(volume, 50.0, 800.0), RotationCommand?.Eval(sigma) ?? 0.0,
+            TranslationCommand?.Eval(sigma) ?? Math.Clamp(volume, SlaveTranslationRange[0], SlaveTranslationRange[1]),
+            RotationCommand?.Eval(sigma) ?? SlaveRotationRange[0],
         };
         return (double[])_last.Clone();
     }
@@ -443,8 +455,10 @@ public sealed class StiffnessProjectionModel
 
     private static JsonObject? CommandJson(CommandMap? c, string unit) => c is null ? null : new JsonObject
     {
-        ["c0"] = c.C0, ["c1"] = c.C1, ["min"] = c.Min, ["max"] = c.Max, ["unit"] = unit,
-        ["input"] = "mean of sigma_biceps and sigma_triceps",
+        ["c0"] = c.C0, ["c1"] = c.C1, ["human_low"] = c.HumanLow, ["human_high"] = c.HumanHigh, ["min"] = c.Min,
+        ["max"] = c.Max, ["unit"] = unit,
+        ["input"] = "operator: c0 + c1 * mean of sigma_biceps and sigma_triceps; slave command: human_low..human_high "
+                    + "mapped linearly onto min..max",
     };
 
     /// <summary>Writes the model file; an existing file is kept as &lt;path&gt;.bak.</summary>

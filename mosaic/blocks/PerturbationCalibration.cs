@@ -31,8 +31,8 @@ namespace MOSAIC.Models.Elastography;
 ///       (imu: trial posture from the IMU input, the angles are the session posture written to the model file)
 ///   axes:xyz (Cartesian axes fitted), arm:0.30;0.27;0.07 (upper arm, forearm, hand in m), index:phase|speed2,
 ///   drive_hz:45, spacing_m:0.02, lag_offset_deg:0, single:biceps|triceps, settle_s:0.4 (rest settling),
-///   capture_settle_s:0.35 (hold settling), min_cycles:3, range_t:50;800 (N/m) and range_r:1;40 (Nm/rad) (clip ranges
-///   of the translational and rotational commands)
+///   capture_settle_s:0.35 (hold settling), min_cycles:3, range_t:300;700 (N/m) and range_r:20;40 (Nm/rad) (slave
+///   ranges of the translational and rotational commands: the operator's relaxed..max span is mapped onto them)
 ///   esp32:, robot:, loadcell:, imu:, plan:, effort: names of the input blocks (defaults ESP32, Robot, LoadCell, IMU,
 ///   PerturbationPlan, Effort).
 /// The cycles come from the phase in the robot state (perturbation.cpp); a Stimulus block (plan:) can drive them instead.
