@@ -184,6 +184,9 @@ def command(data, name, sigma):
     c = (data.get("commands") or {}).get(name)
     if not c:
         return None
+    if "human_low" not in c:  # file from before the span mapping: same rebuild as StiffnessProjectionModel.cs
+        lo, hi = SLAVE_TRANSLATION_RANGE if name == "translation" else SLAVE_ROTATION_RANGE
+        c = dict(c, human_low=c["c0"], human_high=c["c0"] + c["c1"], min=lo, max=hi)
     if c["human_high"] <= c["human_low"]:
         return float(c["min"])
     line = c["c0"] + c["c1"] * 0.5 * (sigma["biceps"] + sigma["triceps"])

@@ -57,9 +57,12 @@ IMU posture.
 
 Output, 12 doubles: K_xx, K_yy, K_zz, K_xy, K_xz, K_yz (N/m, robot base frame), K volume (cube root of det K),
 sigma biceps, sigma triceps (0 = relaxed, 1 = strongest calibration trial, capped at 1.5), valid (0 = packet without
-a usable phase: values of the last valid packet), translational command (N/m) and rotational command (Nm/rad):
-clip(c0 + c1 * mean sigma) from the `commands` of the model file, fitted by the calibration to the overall
-stiffness (mean of the diagonal) of its trials.
+a usable phase: values of the last valid packet), translational command (N/m) and rotational command (Nm/rad) from
+the `commands` of the model file: the operator's overall stiffness c0 + c1 * mean sigma (fitted by the calibration to
+the mean of the diagonal of its trials), its span human_low..human_high (relaxed..max trial) mapped linearly onto the
+slave's range (min..max: 300-700 N/m, 20-40 Nm/rad) and held at the ends. Model files from before the span mapping
+(no human_low/high, written by the calibration blocks before 2026-11-21) still load: their span is taken as mean
+sigma 0..1 (relaxed reference..strongest calibration trial) and their command goes to the slave's range.
 
 `PerturbationCalibration` (Params: model file to write, then `key:value` options, see the header of
 `PerturbationCalibration.cs`): inputs ESP32 features, Robot state (17 doubles from `perturbation.cpp`, with the push

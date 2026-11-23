@@ -188,14 +188,22 @@ public sealed class StiffnessProjectionModel
             throw new InvalidDataException($"unknown index kind '{Index.Kind}'");
         if (root.TryGetProperty("commands", out var cmds) && cmds.ValueKind == JsonValueKind.Object)
         {
-            static CommandMap? Map(JsonElement c, string name) =>
-                c.TryGetProperty(name, out var m) && m.ValueKind == JsonValueKind.Object
-                    ? new CommandMap(m.GetProperty("c0").GetDouble(), m.GetProperty("c1").GetDouble(),
-                        m.GetProperty("min").GetDouble(), m.GetProperty("max").GetDouble(),
-                        m.GetProperty("human_low").GetDouble(), m.GetProperty("human_high").GetDouble())
-                    : null;
-            TranslationCommand = Map(cmds, "translation");
-            RotationCommand = Map(cmds, "rotation");
+            // Files written before the span mapping (calibration blocks before 2026-11-21) have no human_low/high and
+            // their min/max clip the operator's stiffness, not the slave's range. Their span is rebuilt as the line
+            // from mean sigma 0 (the relaxed reference) to 1 (the scale, the largest calibration index), and the
+            // command goes to the slave's range.
+            static CommandMap? Map(JsonElement c, string name, double[] slaveRange)
+            {
+                if (!c.TryGetProperty(name, out var m) || m.ValueKind != JsonValueKind.Object)
+                    return null;
+                double c0 = m.GetProperty("c0").GetDouble(), c1 = m.GetProperty("c1").GetDouble();
+                return m.TryGetProperty("human_low", out var low)
+                    ? new CommandMap(c0, c1, m.GetProperty("min").GetDouble(), m.GetProperty("max").GetDouble(),
+                        low.GetDouble(), m.GetProperty("human_high").GetDouble())
+                    : new CommandMap(c0, c1, slaveRange[0], slaveRange[1], c0, c0 + c1);
+            }
+            TranslationCommand = Map(cmds, "translation", SlaveTranslationRange);
+            RotationCommand = Map(cmds, "rotation", SlaveRotationRange);
         }
         _single = Index.SingleIndex is null ? -1 : PairIndex(Index.SingleIndex);
     }
