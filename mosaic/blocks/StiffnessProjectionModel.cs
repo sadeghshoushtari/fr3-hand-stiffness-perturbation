@@ -19,8 +19,9 @@ namespace MOSAIC.Models.Elastography;
 ///   "stiffness_projection/2": arm lengths and session posture; the geometry is evaluated here with <see cref="ArmModel"/>,
 ///   at the session posture or at the posture set by <see cref="SetPosture"/> (IMUs); index direction per pair.
 /// Per feature vector (esp32_robot_stiffness output, 12 doubles):
-///   phase of each pair = atan2(sin, cos); index "phase" = direction * (phase - relaxed) wrapped to [-90, 270) deg
-///   (<see cref="WrapIndexDeg"/>), "speed2" =
+///   phase of each pair = atan2(sin, cos); index "phase" = direction * (phase - relaxed) wrapped to
+///   [high - 360, high) deg, high = window_high_deg of the pair (270 when the file has none; <see cref="WrapIndexDeg"/>),
+///   "speed2" =
 ///   (c / c_relaxed)^2 - 1 with c = 360 f d / lag, lag = (offset - phase) mod 360;
 ///   sigma = clip(max(index, 0) / scale, 0, sigma_max); u_g = a_g + b_g sum_p w_gp sigma_p; f = F_max u; k = gamma f / l0;
 ///   K_j = J_m^T diag(k) J_m + sum_i f_i d2l_i/dq2; K_c = (J K_j^-1 J^T)^-1.
@@ -53,8 +54,10 @@ public sealed class StiffnessProjectionModel
     public sealed record CommandMap(double C0, double C1, double Min, double Max, double HumanLow, double HumanHigh)
     {
         public double Line(double[] sigma) => C0 + C1 * 0.5 * (sigma[0] + sigma[1]);
-        public double Eval(double[] sigma) => HumanHigh > HumanLow
-            ? Min + (Max - Min) * Math.Clamp((Line(sigma) - HumanLow) / (HumanHigh - HumanLow), 0.0, 1.0)
+        public double Eval(double[] sigma) => Map(Line(sigma));
+        /// <summary>Slave command for an overall stiffness of the operator (the span mapping of Eval).</summary>
+        public double Map(double operatorStiffness) => HumanHigh > HumanLow
+            ? Min + (Max - Min) * Math.Clamp((operatorStiffness - HumanLow) / (HumanHigh - HumanLow), 0.0, 1.0)
             : Min;
     }
 
@@ -78,6 +81,9 @@ public sealed class StiffnessProjectionModel
         public double[] Scale { get; set; } = { 1.0, 1.0 };
         public double[] RelaxedPhaseDeg { get; set; } = { 0.0, 0.0 };
         public double[] Direction { get; set; } = { -1.0, -1.0 };
+        /// <summary>Upper end (deg) of the window of the phase index per pair: the calibration sets it from the
+        /// largest calibrated change (<see cref="WindowHighFromScale"/>); 270 for files without it.</summary>
+        public double[] WindowHighDeg { get; set; } = { DefaultWindowHighDeg, DefaultWindowHighDeg };
         public int[][] Features { get; set; } = { new[] { 8, 9 }, new[] { 10, 11 } };  // biceps: clip A, triceps: clip B (11-17)
     }
 
@@ -181,6 +187,8 @@ public sealed class StiffnessProjectionModel
             Index.RelaxedPhaseDeg[p] = idx.GetProperty("relaxed_phase_deg").GetProperty(Pairs[p]).GetDouble();
             if (idx.TryGetProperty("direction", out var dir))
                 Index.Direction[p] = dir.GetProperty(Pairs[p]).GetDouble();
+            if (idx.TryGetProperty("window_high_deg", out var win) && win.ValueKind == JsonValueKind.Object)
+                Index.WindowHighDeg[p] = win.GetProperty(Pairs[p]).GetDouble();
             var f = idx.GetProperty("features").GetProperty(Pairs[p]);
             Index.Features[p] = new[] { f[0].GetInt32(), f[1].GetInt32() };
         }
@@ -301,7 +309,7 @@ public sealed class StiffnessProjectionModel
     {
         double relaxedDeg = index.RelaxedPhaseDeg[p];
         if (index.Kind == "phase")
-            return WrapIndexDeg(index.Direction[p] * (phaseDeg - relaxedDeg));
+            return WrapIndexDeg(index.Direction[p] * (phaseDeg - relaxedDeg), index.WindowHighDeg[p]);
         double lag = Mod360(index.LagOffsetDeg - phaseDeg);
         double lagRelaxed = Mod360(index.LagOffsetDeg - relaxedDeg);
         double ratio = Math.Max(lagRelaxed, 1.0) / Math.Max(lag, 1.0);  // c / c_relaxed, c = 360 f d / lag
@@ -381,8 +389,8 @@ public sealed class StiffnessProjectionModel
     }
 
     /// <summary>Sets the index direction of each pair from a tense capture: the calibration direction is kept when
-    /// the index rises in it (a change of up to 270 deg, see <see cref="WrapIndexDeg"/>) and reversed when the phase
-    /// moved the other way (by up to 90 deg). A change below <see cref="MinDirectionChangeDeg"/> keeps the
+    /// the index rises in it (a change up to the pair's window high end, see <see cref="WrapIndexDeg"/>) and reversed
+    /// when the phase moved the other way. A change below <see cref="MinDirectionChangeDeg"/> keeps the
     /// direction.</summary>
     public string SetDirectionFromTense(double?[] meanPhaseDeg)
     {
@@ -394,7 +402,7 @@ public sealed class StiffnessProjectionModel
                 msg.Add($"{Pairs[p]}: no phase, direction kept at {Index.Direction[p]:+0;-0}");
                 continue;
             }
-            double change = WrapIndexDeg(Index.Direction[p] * (v - Index.RelaxedPhaseDeg[p]));
+            double change = WrapIndexDeg(Index.Direction[p] * (v - Index.RelaxedPhaseDeg[p]), Index.WindowHighDeg[p]);
             if (Math.Abs(change) < MinDirectionChangeDeg)
             {
                 msg.Add($"{Pairs[p]}: change {change:F1} deg too small, direction kept at {Index.Direction[p]:+0;-0}");
@@ -445,7 +453,8 @@ public sealed class StiffnessProjectionModel
                 ["kind"] = Index.Kind, ["drive_hz"] = Index.DriveHz, ["spacing_m"] = Index.SpacingM,
                 ["lag_offset_deg"] = Index.LagOffsetDeg, ["single_index"] = Index.SingleIndex,
                 ["scale"] = PerPair(Index.Scale), ["relaxed_phase_deg"] = PerPair(Index.RelaxedPhaseDeg),
-                ["direction"] = PerPair(Index.Direction), ["sigma_max"] = Index.SigmaMax,
+                ["direction"] = PerPair(Index.Direction), ["window_high_deg"] = PerPair(Index.WindowHighDeg),
+                ["sigma_max"] = Index.SigmaMax,
                 ["features"] = new JsonObject
                 {
                     [Pairs[0]] = new JsonArray(Index.Features[0][0], Index.Features[0][1]),
@@ -492,12 +501,21 @@ public sealed class StiffnessProjectionModel
 
     public static double WrapDeg(double a) => Mod360(a + 180.0) - 180.0;
 
-    /// <summary>Lower end (deg) of the window of the phase index.</summary>
-    public const double IndexWindowLowDeg = 90.0;
+    /// <summary>Upper end (deg) of the window of the phase index for files without window_high_deg, and the window
+    /// the calibration uses before it knows the scale.</summary>
+    public const double DefaultWindowHighDeg = 270.0;
 
-    /// <summary>Wraps a signed phase change into [-90, 270) deg: a change of up to 270 deg in the contraction direction
-    /// counts (triceps, run of 11-17: +212 deg at max effort, read as -148 deg by <see cref="WrapDeg"/>).</summary>
-    public static double WrapIndexDeg(double a) => Mod360(a + IndexWindowLowDeg) - IndexWindowLowDeg;
+    /// <summary>Wraps a signed phase change into [high - 360, high) deg. With 270 a change of up to 270 deg in the
+    /// contraction direction counts (triceps, run of 11-17: +212 deg at max effort, read as -148 deg by
+    /// <see cref="WrapDeg"/>), but a change of more than 90 deg the other way reads as a large index (clip A, run of
+    /// 11-25: 4 % of the packets 96 to 177 deg the other way at a scale of 11 deg, each read as maximal); a pair with a
+    /// small calibrated change gets a lower high end (<see cref="WindowHighFromScale"/>).</summary>
+    public static double WrapIndexDeg(double a, double highDeg = DefaultWindowHighDeg) =>
+        Mod360(a + 360.0 - highDeg) - (360.0 - highDeg);
+
+    /// <summary>Window high end for a pair from its calibrated scale (largest index over the calibration trials):
+    /// 1.5 x scale, within 180..270 deg (180 = symmetric window for scales up to 120 deg).</summary>
+    public static double WindowHighFromScale(double scaleDeg) => Math.Clamp(1.5 * scaleDeg, 180.0, DefaultWindowHighDeg);
 
     /// <summary>Circular mean of angles in degrees, or null for an empty list.</summary>
     public static double? CircularMeanDeg(IEnumerable<double> deg)
@@ -511,6 +529,23 @@ public sealed class StiffnessProjectionModel
             n++;
         }
         return n == 0 ? null : Math.Atan2(s, c) * 180.0 / Math.PI;
+    }
+
+    /// <summary>Circular standard deviation of angles in degrees, sqrt(-2 ln R), or null for an empty list.</summary>
+    public static double? CircularSpreadDeg(IEnumerable<double> deg)
+    {
+        double c = 0, s = 0;
+        int n = 0;
+        foreach (var d in deg)
+        {
+            c += Math.Cos(d * Math.PI / 180.0);
+            s += Math.Sin(d * Math.PI / 180.0);
+            n++;
+        }
+        if (n == 0)
+            return null;
+        double r = Math.Sqrt(c * c + s * s) / n;
+        return Math.Sqrt(Math.Max(-2.0 * Math.Log(Math.Max(r, 1e-12)), 0.0)) * 180.0 / Math.PI;
     }
 
     public static (double[,] J, double[,] Jm, double[,,] H) Unpack(ArmGeometry g) => (g.J, g.Jm, g.H);
@@ -604,8 +639,12 @@ public sealed class PhaseCapture
 
     public int[] Counts => new[] { _phases[0].Count, _phases[1].Count };
 
+    /// <summary>Feature vectors added, with or without a phase.</summary>
+    public int Total { get; private set; }
+
     public void Add(double?[] phases)
     {
+        Total++;
         for (int p = 0; p < 2; p++)
             if (phases[p] is double v)
                 _phases[p].Add(v);
@@ -617,9 +656,16 @@ public sealed class PhaseCapture
         StiffnessProjectionModel.CircularMeanDeg(_phases[0]), StiffnessProjectionModel.CircularMeanDeg(_phases[1]),
     };
 
+    /// <summary>Circular standard deviation per pair (deg), null for a pair without phases.</summary>
+    public double?[] Spread() => new[]
+    {
+        StiffnessProjectionModel.CircularSpreadDeg(_phases[0]), StiffnessProjectionModel.CircularSpreadDeg(_phases[1]),
+    };
+
     public void Clear()
     {
         _phases[0].Clear();
         _phases[1].Clear();
+        Total = 0;
     }
 }

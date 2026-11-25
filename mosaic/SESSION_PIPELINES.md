@@ -24,7 +24,7 @@ slave), which must never run at the same time.
 | LoadCell | UDPClient | yes | K6D80 + GSV-8DS force/torque, port 50800 (placeholder until its connection is known) |
 | Effort | Trigger | yes | operator state of the trial: empty (-1), relaxed (0), medium (0.5), max (1). Start capture starts the trial on the robot; the fit runs by itself after the first max trial, later trials validate the model |
 | Robot | UDPClient | yes | sends the Effort code to the perturbation program (port 50900), receives its state (port 50910) |
-| Calibration | PerturbationCalibration | custom | per step: dx, dF; per trial: identified K (the trial ends when the robot's trial ends); fit after the first max trial: relaxed reference, direction and scale per pair, model parameters, writes the model file; validation trials after it: predicted vs measured K |
+| Calibration | PerturbationCalibration | custom | per step: dx, dF; per trial: identified K (the trial ends when the robot's trial ends); fit after the first max trial: quality check (GOOD / WEAK / REDO), relaxed reference, direction, scale and index window per pair, model parameters, writes the model file; validation trials after it: predicted vs measured K, validation verdict (PASS / FAIL / REPEAT VALIDATION) |
 | Session | Trigger | yes | run: relaxed (0) and tense (1) captures set the reference and direction of this mounting |
 | Stiffness | StiffnessProjection | custom | features + posture (IMU, else session posture) -> 3x3 hand stiffness |
 | Commands | Projector | yes | selects the two commands (elements 10, 11): the operator's overall stiffness with its relaxed..max span mapped linearly onto the slave's range, 300-700 N/m and 20-40 Nm/rad (slave gain 40-80, of which half acts), as the Virtuose trigger's 0..1 is mapped onto 300-700 N/m |
@@ -62,6 +62,9 @@ use these paths. Build the robot program once (and after it changes), in the rep
 
 ## Calibration session, step by step
 
+Before the session, on the laptop: the bench signal check and the guided test (`signal_check.py`, `guided_test.py`)
+both end with a verdict; calibrate only after the guided test prints `VERDICT: BOTH PASS`.
+
 The board is on USB; the emergency stop is within reach. Three terminals; in terminals 1 and 2 first
 `cd ~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/fr3-hand-stiffness-perturbation`:
 
@@ -88,12 +91,27 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
      `trial n (...) done: 12 cycles, K diag ... N/m, 6 turns, K_rot diag ... Nm/rad, phase biceps ..., triceps ...`. The Effort card stops
      its capture by itself after a few seconds (its capture duration); that does not end the trial.
    - Rest about a minute between trials.
-6. The fit runs by itself when the max trial is done: Terminal 3 prints `full effort trial done: fitting the
-   model`, the relaxed reference, the direction of each pair, the fitted parameters and `model written to ...`.
-   It also prints the two command maps (`translation command = c0 + c1 * mean sigma`, `rotation command = ...`).
+6. The fit runs by itself when the max trial is done: Terminal 3 prints `full effort trial done: checking the trials
+   and fitting the model`, then the check of the trials:
+   - `CHECK biceps (clip A): ...`, `CHECK triceps (clip B): ...`: share of packets with a phase in each trial (needs
+     80 %), relaxed -> max phase change against the scatter within a trial (needs 2.0x), medium between relaxed and
+     max; `CHECK effort: ...`: robot-measured overall stiffness of relaxed, medium, max (max needs 1.5x relaxed).
+   - `VERDICT: GOOD` (go on with the validation trials), `WEAK` (a medium trial out of order: repeat it, or go by the
+     validation) or `REDO` (with the clip and what to do; the model file is still written, do not use it: reopen
+     `session_calibration.json` and repeat the calibration). Backtest on the sessions of 11-17 to 11-25: GOOD only for
+     the two sessions whose model worked (11-19 17:26 and 11-23 14:05 UTC).
+   Then the relaxed reference, the direction of each pair, the index scale and window, the fitted parameters and
+   `model written to ...`, and the two command maps (`translation command = c0 + c1 * mean sigma`,
+   `rotation command = ...`).
    Then validation trials, as above: relaxed, medium, max. Terminal 3 prints `validation trial n (...)`: both
    overall stiffnesses predicted from the trial's phases vs measured (the prediction before the slave's range; the
    capped command is named when the range cuts it), and the 3x3 model vs measured (session file, `validation`).
+   Once a relaxed and a max validation trial exist, `VALIDATION CHECK: ...` (slave command predicted from the phases
+   vs mapped from the robot's measurement) and `VALIDATION: PASS` (open `session_run.json`), `FAIL` (repeat the
+   calibration) or `REPEAT VALIDATION` (the robot measured no stiffening at max: repeat the validation trials).
+   PASS needs: robot max at least 1.5x relaxed, predicted max at least half the slave range above relaxed, and both
+   predictions within a quarter of the range of the measured ones. Both results are in the session file (`check`,
+   `validation_check`).
 7. Vibrator card: None, then Apply to device (= vibrator off). Terminal 2: q and Enter. Terminal 1: q and Enter.
 
 Where the results go (`<thesis>` = `~/Mohammadsadegh_Shoushtaridehshal_Master_Thesis`):
@@ -101,7 +119,7 @@ Where the results go (`<thesis>` = `~/Mohammadsadegh_Shoushtaridehshal_Master_Th
 | Written by | File | Content |
 |---|---|---|
 | Calibration block (MOSAIC) | `<thesis>/mosaic_models/stiffness_projection.json` (previous one kept as `.bak`) | fitted model, read by the run pipeline |
-| Calibration block (MOSAIC) | `<thesis>/mosaic_logs/calibration/calibration_<date_time>.json` | per trial: each step (dx_d, dx, dF), K, mean phases; after fit: the model |
+| Calibration block (MOSAIC) | `<thesis>/mosaic_logs/calibration/calibration_<date_time>.json` | per trial: each step (dx_d, dx, dF), K, mean phases, phase scatter and packets; after fit: the model and the check verdict; after validation: the validation verdict |
 | MOSAIC blocks with a Path | `<thesis>/mosaic_logs/calibration/*.csv` | MOSAIC's own recording of the ESP32, Robot, IMU and LoadCell streams |
 | `./perturbation` | `<thesis>/fr3-hand-stiffness-perturbation/perturbation_logs/<date_time>/robot.csv`, `trials.csv` | raw robot data at 1 kHz, trial start and end |
 | `sensors.py` | `<thesis>/fr3-hand-stiffness-perturbation/perturbation_logs/<date_time>_sensors/sensors.csv` | raw sensor packets |

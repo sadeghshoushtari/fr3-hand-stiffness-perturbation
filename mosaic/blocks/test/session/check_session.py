@@ -72,6 +72,10 @@ def main():
           f"{idx['direction']} (simulated +1, +1; triceps turns 212 deg)")
     check("calibration: index scale", abs(idx["scale"]["biceps"] - 15) < 2 and abs(idx["scale"]["triceps"] - 212) < 6,
           f"{ {p: round(v, 2) for p, v in idx['scale'].items()} } (simulated 15, 212 deg)")
+    win = idx.get("window_high_deg") or {}
+    check("calibration: index window from the scale", all(
+        abs(win.get(p, 0.0) - mx.window_high_from_scale(idx["scale"][p])) < 1e-6 for p in PAIRS),
+          f"{win} (biceps 180, triceps 270)")
     val = [t for t in trials if t.get("validation") is not None]
     verr = [t["validation"].get("relative_error", np.inf) for t in val]
     check("calibration: validation trial after the automatic fit (3x3 model)",

@@ -18,6 +18,9 @@ namespace MOSAIC.Models.Elastography;
 /// the first trial at full effort (code 1) with a stiffness, or on code 9 ("fit"); it uses the trials before it and
 /// writes the model file. Trials after the fit are validation trials: the model predicts their stiffness from their
 /// phases, and the prediction is compared with the measured stiffness (log and session file).
+/// Quality check (<see cref="CheckTrials"/>): before the fit the fitting trials get a verdict GOOD / WEAK / REDO with
+/// what to do; after the validation trials the validation gets PASS / FAIL / REPEAT VALIDATION
+/// (<see cref="CheckValidation"/>). Both are logged and written to the session file.
 /// Cycles: within a trial each push of the perturbation program (state value 15: 1 rest, 2 push out, 3 hold, 4 return)
 /// gives one perturbation: dx = mean handle position in the hold after <see cref="Options.CaptureSettleS"/> - mean in
 /// the rest after <see cref="Options.RestSettleS"/>, likewise the equilibrium dx_d and the force. A Stimulus block
@@ -78,8 +81,11 @@ public sealed class PerturbationCalibrationCore
 
     public sealed record Cycle(double[] Dx, double[] DxDesired, double[] Df, bool Rotation = false);
 
+    /// <summary>A trial; PhaseSpread: circular standard deviation of each pair's phase over the trial (deg), Packets:
+    /// feature vectors received during the trial (with or without a phase).</summary>
     public sealed record Trial(int Number, double Code, double[,]? K, List<Cycle> Cycles, double?[] Phase,
-        int[] PhaseCounts, Posture Posture, double[]? ImuQuaternions, double[,]? KRot = null);
+        int[] PhaseCounts, Posture Posture, double[]? ImuQuaternions, double[,]? KRot = null,
+        double?[]? PhaseSpread = null, int Packets = 0);
 
     private sealed class Window
     {
@@ -123,6 +129,8 @@ public sealed class PerturbationCalibrationCore
     private readonly HashSet<int> _validationTrials = new();
     private readonly Dictionary<int, Validation> _validation = new();
     private double[,] _kEmpty = new double[3, 3], _kRotEmpty = new double[3, 3];
+    private CheckReport? _check;
+    private JsonObject? _validationCheck;
 
     /// <summary>Validation trial: 3x3 model prediction vs measurement (translation), and the two overall stiffnesses
     /// (mean of the diagonal) predicted by the command maps before the slave's range is applied vs measured, with
@@ -294,6 +302,7 @@ public sealed class PerturbationCalibrationCore
         {
             if (c >= FitCode - 0.5)
             {
+                LogCheck();
                 Fit();
                 return;
             }
@@ -422,23 +431,26 @@ public sealed class PerturbationCalibrationCore
                 Log("  no IMU data in this trial: session posture used");
             posture = ArmModel.SessionPosture(_o.UpperArmDeg, _o.ElbowDeg);
         }
-        var trial = new Trial(Trials.Count + 1, code, k, allCycles, _phases.Mean(), _phases.Counts, posture, q, kRot);
+        var trial = new Trial(Trials.Count + 1, code, k, allCycles, _phases.Mean(), _phases.Counts, posture, q, kRot,
+            _phases.Spread(), _phases.Total);
         Trials.Add(trial);
         Log($"trial {trial.Number} ({Label(code)}) done: {cycles.Count} cycles, "
             + (k is null ? $"NO stiffness (needs {_o.MinCycles}+ cycles in 3 directions)"
                 : $"K diag {k[0, 0]:F0} {k[1, 1]:F0} {k[2, 2]:F0} N/m")
             + (rotCycles.Count == 0 ? "" : kRot is null ? $", {rotCycles.Count} turns, NO rotational stiffness"
                 : $", {rotCycles.Count} turns, K_rot diag {kRot[0, 0]:F1} {kRot[1, 1]:F1} {kRot[2, 2]:F1} Nm/rad")
-            + $", phase biceps {Deg(trial.Phase[0])} ({trial.PhaseCounts[0]}), triceps {Deg(trial.Phase[1])} "
-            + $"({trial.PhaseCounts[1]})");
+            + $", phase biceps {Deg(trial.Phase[0])} ({trial.PhaseCounts[0]} of {trial.Packets}), triceps "
+            + $"{Deg(trial.Phase[1])} ({trial.PhaseCounts[1]} of {trial.Packets})");
         if (FittedModel is not null)
         {
             _validationTrials.Add(trial.Number);
             Validate(trial, FittedModel);
+            CheckValidation(FittedModel);
         }
         else if (code >= 1.0 - 1e-9 && k is not null)
         {
-            Log("full effort trial done: fitting the model");
+            Log("full effort trial done: checking the trials and fitting the model");
+            LogCheck();
             Fit();
             return;
         }
@@ -618,6 +630,12 @@ public sealed class PerturbationCalibrationCore
             if (index.Scale[p] <= 1e-9)
                 Log($"fit: warning, the {StiffnessProjectionModel.Pairs[p]} index never rises above relaxed");
         }
+        // the trials' indices above use the default window; the run uses a window fitted to the calibrated change
+        for (int p = 0; p < 2; p++)
+            index.WindowHighDeg[p] = StiffnessProjectionModel.WindowHighFromScale(index.Scale[p]);
+        Log($"fit: index scale biceps {index.Scale[0]:F1} deg, triceps {index.Scale[1]:F1} deg; window "
+            + $"{index.WindowHighDeg[0] - 360:F0}..{index.WindowHighDeg[0]:F0} and "
+            + $"{index.WindowHighDeg[1] - 360:F0}..{index.WindowHighDeg[1]:F0} deg");
 
         var weight = new double[3, 3];
         foreach (char a in _o.Axes)
@@ -704,6 +722,174 @@ public sealed class PerturbationCalibrationCore
         return up.Top <= down.Top ? 1.0 : -1.0;
     }
 
+    // --- quality check ---
+
+    // Thresholds, backtested on the calibration sessions of 11-17 to 11-25 (MOSAIC logs): GOOD and PASS only for the
+    // two sessions whose model worked, 11-19 17:26 and 11-23 14:05 UTC; REDO for the other five.
+    public const double CheckMinPhaseShare = 0.8;          // share of a muscle trial's feature vectors with a phase
+    public const double CheckMinSeparation = 2.0;          // |relaxed -> max phase change| / scatter within a trial
+    public const double CheckScatterFloorDeg = 2.0;        // floor of that scatter
+    public const double CheckMinEffortRatio = 1.5;         // robot: overall stiffness of max / relaxed
+    public const double CheckMinValidationSpan = 0.5;      // validation: predicted command max - relaxed / slave range
+    public const double CheckMaxValidationError = 0.25;    // validation: |predicted - measured command| / slave range
+
+    public sealed record CheckReport(string Verdict, List<string> Lines, List<string> Actions);
+
+    /// <summary>Quality check of the fitting trials: per clip the share of each muscle trial's feature vectors with a
+    /// phase, and the relaxed -> max phase change against the scatter within a trial (root mean square of the
+    /// circular standard deviations of the relaxed and max trials), with the medium trial between relaxed and max; the
+    /// robot-measured overall stiffness (mean of the diagonal of K - K_empty) rising from relaxed over medium to max.
+    /// Verdict GOOD, WEAK (a medium trial out of order) or REDO, with what to do.</summary>
+    public static CheckReport CheckTrials(IReadOnlyList<Trial> fitTrials)
+    {
+        var lines = new List<string>();
+        var actions = new List<string>();
+        int worst = 0;
+        var muscle = fitTrials.Where(t => t.Code > -0.5).ToList();
+        var relaxed = muscle.Where(t => Math.Abs(t.Code) < 1e-9).ToList();
+        double strongest = muscle.Count > 0 ? muscle.Max(t => t.Code) : 0.0;
+        if (relaxed.Count == 0 || strongest <= 1e-9)
+            return new CheckReport("REDO", new List<string> { "needs a relaxed trial and an effort trial" },
+                new List<string> { "run the relaxed and the max trial" });
+        var max = muscle.Where(t => t.Code >= strongest - 1e-9).ToList();
+        var medium = muscle.Where(t => t.Code > 1e-9 && t.Code < strongest - 1e-9).ToList();
+        for (int p = 0; p < 2; p++)
+        {
+            string name = p == 0 ? "biceps (clip A)" : "triceps (clip B)", clip = p == 0 ? "clip A" : "clip B";
+            var lost = muscle.FirstOrDefault(t => PhaseShare(t, p) < CheckMinPhaseShare);
+            if (lost is not null)
+            {
+                lines.Add($"{name}: phase in {PhaseShare(lost, p) * 100:F0} % of the {Label(lost.Code)} trial "
+                          + $"({lost.PhaseCounts[p]} of {Math.Max(lost.Packets, lost.PhaseCounts[p])} packets): REDO");
+                actions.Add($"{clip} loses its signal: press it on firmly or reseat it, check it with the bench test");
+                worst = 2;
+                continue;
+            }
+            double r0 = StiffnessProjectionModel.CircularMeanDeg(relaxed.Select(t => t.Phase[p]!.Value))!.Value;
+            double change = StiffnessProjectionModel.WrapDeg(
+                StiffnessProjectionModel.CircularMeanDeg(max.Select(t => t.Phase[p]!.Value))!.Value - r0);
+            double scatter = Math.Max(Math.Sqrt(relaxed.Concat(max).Average(t => Sq(t.PhaseSpread?[p] ?? 0.0))),
+                CheckScatterFloorDeg);
+            double ratio = Math.Abs(change) / scatter;
+            string head = $"{name}: relaxed -> max {change:+0;-0} deg, scatter within a trial {scatter:F0} deg, "
+                          + $"ratio {ratio:F1}";
+            if (ratio < CheckMinSeparation)
+            {
+                lines.Add(head + $" (needs {CheckMinSeparation:F1}): REDO");
+                actions.Add($"{clip} does not separate relaxed from max: reseat {clip} or move the vibrator, check it "
+                            + "with the bench test");
+                worst = 2;
+                continue;
+            }
+            if (medium.Count > 0)
+            {
+                double m = StiffnessProjectionModel.WrapDeg(StiffnessProjectionModel.CircularMeanDeg(
+                    medium.Select(t => t.Phase[p]!.Value))!.Value - r0) * Math.Sign(change);
+                if (m < -scatter || m > 1.5 * Math.Abs(change))
+                {
+                    lines.Add(head + $"; medium at {m:+0;-0} deg, not between relaxed and max: WEAK");
+                    actions.Add("repeat the medium trial with an effort between relaxed and max");
+                    worst = Math.Max(worst, 1);
+                    continue;
+                }
+            }
+            lines.Add(head + ": OK");
+        }
+        var kEmpty = MeanMatrix(fitTrials.Where(t => t.Code < -0.5 && t.K is not null).Select(t => t.K!).ToList());
+        double? Level(List<Trial> ts)
+        {
+            var k = ts.Where(t => t.K is not null).Select(t => Overall(t.K!, kEmpty)).ToList();
+            return k.Count > 0 ? k.Average() : null;
+        }
+        double? kr = Level(relaxed), kx = Level(max), km = medium.Count > 0 ? Level(medium) : null;
+        if (kr is not double r || kx is not double x)
+        {
+            lines.Add("effort: no robot stiffness for the relaxed or the max trial: REDO");
+            actions.Add("repeat that trial (it needs 3 or more pushes in 3 directions)");
+            worst = 2;
+        }
+        else if (x < CheckMinEffortRatio * Math.Max(r, 1.0))
+        {
+            lines.Add($"effort: robot stiffness relaxed {r:F0} N/m, max {x:F0} N/m (max needs {CheckMinEffortRatio:F1}x "
+                      + "relaxed): REDO");
+            actions.Add("co-contract harder in the max trial and stay loose in the relaxed trial");
+            worst = 2;
+        }
+        else if (km is double mid && !(r < mid && mid < x))
+        {
+            lines.Add($"effort: robot stiffness relaxed {r:F0}, medium {mid:F0}, max {x:F0} N/m, medium not between: WEAK");
+            actions.Add("repeat the medium trial with an effort between relaxed and max");
+            worst = Math.Max(worst, 1);
+        }
+        else
+            lines.Add($"effort: robot stiffness relaxed {r:F0}" + (km is double m2 ? $", medium {m2:F0}" : "")
+                      + $", max {x:F0} N/m: OK");
+        return new CheckReport(new[] { "GOOD", "WEAK", "REDO" }[worst], lines, actions.Distinct().ToList());
+    }
+
+    private static double PhaseShare(Trial t, int p) => t.Packets > 0
+        ? (double)t.PhaseCounts[p] / t.Packets
+        : t.PhaseCounts[p] > 0 ? 1.0 : 0.0;
+
+    private static double Sq(double v) => v * v;
+
+    private void LogCheck()
+    {
+        _check = CheckTrials(Trials.Where(t => !_validationTrials.Contains(t.Number)).ToList());
+        foreach (var line in _check.Lines)
+            Log("CHECK " + line);
+        Log($"VERDICT: {_check.Verdict} - " + _check.Verdict switch
+        {
+            "GOOD" => "both clips separate relaxed from max and the effort rose; run the validation trials (relaxed, "
+                      + "medium, max)",
+            "WEAK" => string.Join("; ", _check.Actions) + "; or run the validation trials and go by their check",
+            _ => string.Join("; ", _check.Actions) + "; then reopen session_calibration.json and repeat the "
+                 + "calibration (the model file below is written anyway: do not use it)",
+        });
+    }
+
+    /// <summary>Validation check, after each validation trial once a relaxed and a max validation trial exist (the
+    /// latest of each): PASS if the robot measured the max trial at CheckMinEffortRatio times the relaxed one, the
+    /// predicted slave command of max lies at least CheckMinValidationSpan of the slave range above relaxed, and both
+    /// predictions lie within CheckMaxValidationError of the range of the command the robot's measurement maps to;
+    /// REPEAT VALIDATION if the robot saw no stiffening; FAIL otherwise.</summary>
+    private void CheckValidation(StiffnessProjectionModel model)
+    {
+        if (model.TranslationCommand is not { } map)
+            return;
+        Validation? Latest(Func<double, bool> select) => Trials
+            .Where(t => select(t.Code) && _validation.ContainsKey(t.Number)).Select(t => _validation[t.Number])
+            .LastOrDefault();
+        var vr = Latest(c => Math.Abs(c) < 1e-9);
+        var vx = Latest(c => c >= 1.0 - 1e-9);
+        var vm = Latest(c => c > 1e-9 && c < 1.0 - 1e-9);
+        if (vr is null || vx is null)
+            return;
+        double range = map.Max - map.Min;
+        double Measured(Validation v) => map.Map(v.TranslationMeasured);
+        double effort = vx.TranslationMeasured / Math.Max(vr.TranslationMeasured, 1.0);
+        bool span = vx.TranslationCommand - vr.TranslationCommand >= CheckMinValidationSpan * range;
+        bool close = Math.Abs(vr.TranslationCommand - Measured(vr)) <= CheckMaxValidationError * range
+                     && Math.Abs(vx.TranslationCommand - Measured(vx)) <= CheckMaxValidationError * range;
+        string result = effort < CheckMinEffortRatio ? "REPEAT VALIDATION" : span && close ? "PASS" : "FAIL";
+        string Pair(string label, Validation v) =>
+            $"{label} {v.TranslationCommand:F0} / {Measured(v):F0}";
+        string detail = "slave command predicted / from the robot's measurement: " + Pair("relaxed", vr)
+                        + (vm is null ? "" : ", " + Pair("medium", vm)) + ", " + Pair("max", vx)
+                        + $" N/m; robot max / relaxed {effort:F1}x";
+        Log("VALIDATION CHECK: " + detail);
+        Log($"VALIDATION: {result} - " + result switch
+        {
+            "PASS" => "the calibration is good; open session_run.json",
+            "REPEAT VALIDATION" => $"the robot measured no stiffening in the max validation trial (needs "
+                                   + $"{CheckMinEffortRatio:F1}x relaxed); repeat the validation trials with a loose "
+                                   + "relaxed and a hard max",
+            _ => "the model does not predict the validation trials; reopen session_calibration.json and repeat the "
+                 + "calibration",
+        });
+        _validationCheck = new JsonObject { ["result"] = result, ["detail"] = detail };
+    }
+
     // --- session file ---
 
     private void SaveSession(StiffnessProjectionModel? model)
@@ -724,6 +910,8 @@ public sealed class PerturbationCalibrationCore
                     .Select(r => (JsonNode)Arr(Enumerable.Range(0, 3).Select(c => t.K[r, c]))).ToArray()),
                 ["phase_deg"] = new JsonArray(t.Phase.Select(p => (JsonNode?)p).ToArray()),
                 ["phase_packets"] = Arr(t.PhaseCounts.Select(c => (double)c)),
+                ["phase_spread_deg"] = new JsonArray((t.PhaseSpread ?? new double?[2]).Select(p => (JsonNode?)p).ToArray()),
+                ["packets"] = t.Packets,
                 ["imu"] = t.ImuQuaternions is null ? null : Arr(t.ImuQuaternions),
                 ["K_rot"] = t.KRot is null ? null : Mat(t.KRot),
                 ["validation"] = _validation.TryGetValue(t.Number, out var v) ? new JsonObject
@@ -740,7 +928,17 @@ public sealed class PerturbationCalibrationCore
                     ["dx"] = Arr(c.Dx), ["dx_d"] = Arr(c.DxDesired), ["dF"] = Arr(c.Df), ["rotation"] = c.Rotation,
                 }).ToArray()),
             }).ToArray());
-            var root = new JsonObject { ["trials"] = trials, ["model"] = model?.ToJson() };
+            var root = new JsonObject
+            {
+                ["trials"] = trials, ["model"] = model?.ToJson(),
+                ["check"] = _check is null ? null : new JsonObject
+                {
+                    ["verdict"] = _check.Verdict,
+                    ["lines"] = new JsonArray(_check.Lines.Select(l => (JsonNode)l).ToArray()),
+                    ["actions"] = new JsonArray(_check.Actions.Select(a => (JsonNode)a).ToArray()),
+                },
+                ["validation_check"] = _validationCheck?.DeepClone(),
+            };
             File.WriteAllText(Path.Combine(dir, $"calibration_{_sessionStamp}.json"),
                 root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }

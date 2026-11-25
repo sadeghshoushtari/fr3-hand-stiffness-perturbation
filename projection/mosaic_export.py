@@ -64,7 +64,8 @@ def export(model, index, posture, path, sigma_max=1.5, features=FEATURES):
 def export_v2(model, index, path, sigma_max=1.5, features=FEATURES):
     """Write the model file in format 2: arm lengths and session posture instead of the geometry (the block evaluates
     the arm model itself, at the session posture or at the IMU posture), and an index direction per pair
-    (index = wrap to [-90, 270) of direction * (phase - relaxed) for the phase index; format 1 has direction -1 for both)."""
+    (index = wrap to [high - 360, high) of direction * (phase - relaxed) for the phase index, high = window_high_deg if
+    the index gives it, else 270; format 1 has direction -1 for both)."""
     if model.joint_groups:
         raise NotImplementedError("joint-level groups are not supported by the MOSAIC block")
     posture = index.get("posture") or {"upper_arm_deg": 90.0, "elbow_deg": 90.0}
@@ -85,6 +86,8 @@ def export_v2(model, index, path, sigma_max=1.5, features=FEATURES):
                   "scale": {p: float(index["scale"][p]) for p in PAIRS},
                   "relaxed_phase_deg": {p: float(index["relaxed_phase_deg"][p]) for p in PAIRS},
                   "direction": {p: float(direction.get(p, -1.0)) for p in PAIRS},
+                  **({"window_high_deg": {p: float(index["window_high_deg"][p]) for p in PAIRS}}
+                     if index.get("window_high_deg") else {}),
                   "sigma_max": float(sigma_max), "features": {p: list(features[p]) for p in PAIRS}},
         "fit": model.fit_report,
     }
@@ -113,18 +116,24 @@ def wrap_deg(a):
     return (a + 180.0) % 360.0 - 180.0
 
 
-# The phase index is direction * (phase - relaxed) wrapped to [-90, 270) deg: a change of up to 270 deg in the
-# contraction direction counts (triceps, run of 11-17: +212 deg at max effort, read as -148 deg by the shortest wrap).
-INDEX_WINDOW_LOW_DEG = 90.0
+# The phase index is direction * (phase - relaxed) wrapped to [high - 360, high) deg. With high = 270 a change of up
+# to 270 deg in the contraction direction counts (triceps, run of 11-17: +212 deg at max effort, read as -148 deg by
+# the shortest wrap), but a change of more than 90 deg the other way reads as a large index; the calibration writes
+# window_high_deg per pair (1.5 x scale within 180..270 deg), files without it use 270.
+DEFAULT_WINDOW_HIGH_DEG = 270.0
 
 
-def wrap_index_deg(a):
-    return (a + INDEX_WINDOW_LOW_DEG) % 360.0 - INDEX_WINDOW_LOW_DEG
+def wrap_index_deg(a, high=DEFAULT_WINDOW_HIGH_DEG):
+    return (a + 360.0 - high) % 360.0 - (360.0 - high)
 
 
-def raw_index(phase_deg, relaxed_deg, idx, direction=-1.0):
+def window_high_from_scale(scale_deg):
+    return min(max(1.5 * scale_deg, 180.0), DEFAULT_WINDOW_HIGH_DEG)
+
+
+def raw_index(phase_deg, relaxed_deg, idx, direction=-1.0, high=DEFAULT_WINDOW_HIGH_DEG):
     if idx["kind"] == "phase":
-        return wrap_index_deg(direction * (phase_deg - relaxed_deg))
+        return wrap_index_deg(direction * (phase_deg - relaxed_deg), high)
     c = 360.0 * idx["drive_hz"] * idx["spacing_m"]
     lag = (idx["lag_offset_deg"] - phase_deg) % 360.0
     lag_relaxed = (idx["lag_offset_deg"] - relaxed_deg) % 360.0
@@ -142,7 +151,8 @@ def sigmas(data, features):
             continue
         c, s = float(features[ci]), float(features[si])
         direction = (idx.get("direction") or {}).get(p, -1.0)
-        raw[p] = raw_index(np.degrees(np.arctan2(s, c)), idx["relaxed_phase_deg"][p], idx, direction) \
+        high = (idx.get("window_high_deg") or {}).get(p, DEFAULT_WINDOW_HIGH_DEG)
+        raw[p] = raw_index(np.degrees(np.arctan2(s, c)), idx["relaxed_phase_deg"][p], idx, direction, high) \
             if c * c + s * s > 0.25 else None
     if idx.get("single_index"):
         raw = {p: raw[idx["single_index"]] for p in PAIRS}

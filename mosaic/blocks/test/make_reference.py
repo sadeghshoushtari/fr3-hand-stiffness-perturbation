@@ -9,6 +9,7 @@ by packet, the reference of the block):
           20 mm pair, random phases, packets without phase (0, 0) and short vectors
   phase   the same packets with the phase index, single index on the biceps
   v2      model file format 2 (geometry evaluated by the block, own arm lengths and posture, index direction per pair)
+  window  v2 with an index window per pair (window_high_deg, as the calibration writes it)
 """
 import argparse
 import csv
@@ -89,6 +90,10 @@ def main():
            "direction": {"biceps": 1.0, "triceps": -1.0}, "posture": {"upper_arm_deg": 15.0, "elbow_deg": 75.0}}
     data = mx.export_v2(arm_model, idx, out / "v2_model.json")
     write(out, "v2", data, packets)
+    # format 2 with the index window the calibration writes (window_high_deg per pair, 180..270 deg)
+    idx["window_high_deg"] = {"biceps": mx.window_high_from_scale(40.0), "triceps": 230.0}
+    data = mx.export_v2(arm_model, idx, out / "window_model.json")
+    write(out, "window", data, packets)
 
 
 if __name__ == "__main__":
