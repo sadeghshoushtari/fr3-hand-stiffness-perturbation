@@ -210,8 +210,10 @@ pipeline over UDP).
 
 The whole session can also run in MOSAIC (`mosaic/session_calibration.json`, `mosaic/session_run.json`): the
 Effort card starts each trial of `perturbation`, the `PerturbationCalibration` block identifies the stiffness per
-trial from the steps in the robot state, fits the model and writes `stiffness_projection.json` (format 2: the block evaluates the arm geometry itself,
-so the posture can come from IMUs); in the run pipeline a Session trigger sets the relaxed reference and the index
+trial from the steps in the robot state, fits the model and writes `stiffness_projection.json` (format 3, the two-pair hand model of
+`projection/hand_model.py`: one drive from both pairs, 6x6 hand stiffness, both slave commands from it; the block
+evaluates the arm geometry itself, so the posture can come from IMUs; `projection/refit_calibration.py` refits logged
+sessions with it); in the run pipeline a Session trigger sets the relaxed reference and the index
 direction of each mounting. Step-by-step use: `mosaic/SESSION_PIPELINES.md`.
 
 ## Status

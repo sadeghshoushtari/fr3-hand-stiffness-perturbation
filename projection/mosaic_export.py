@@ -11,6 +11,10 @@ only computes
   K_c     =  (J K_j^-1 J^T)^-1   in the robot base frame, N/m
 Feature vector: esp32_robot_stiffness output (12 doubles); [8, 9] cos/sin of the clip A pair (biceps since 11-17),
 [10, 11] clip B (triceps). A pair is unusable when its cos/sin are 0 (amplitude below the firmware threshold).
+
+Format 3 (hand_model.py, written by the PerturbationCalibration block): one drive d = mean sigma, the 6x6 hand stiffness
+K6 at the handle centre; the output carries its translational block (kxx..kyz, k_volume) and both commands come from
+the projection: the reduced translational and rotational blocks mapped by the "commands" spans.
 """
 
 import json
@@ -22,6 +26,7 @@ from stiffness_model import GAMMA
 
 FORMAT = "stiffness_projection/1"
 FORMAT2 = "stiffness_projection/2"
+FORMAT3 = "stiffness_projection/3"
 FEATURES = {"biceps": (8, 9), "triceps": (10, 11)}
 PAIRS = ("biceps", "triceps")
 OUTPUT = ("kxx", "kyy", "kzz", "kxy", "kxz", "kyz", "k_volume", "sigma_biceps", "sigma_triceps", "valid",
@@ -214,23 +219,52 @@ def output(kc, sigma, valid, data=None):
             SLAVE_ROTATION_RANGE[0] if k_r is None else k_r]
 
 
+def output3(hand, sigma):
+    """Format 3 output: translational block of K6 at the handle centre, its volume, the sigmas, valid, and the two
+    commands of the projection (without "commands": the operator's reduced stiffness clipped to the slave range)."""
+    from hand_model import drive, reduce
+    d = drive(sigma)
+    k6 = hand.hand_stiffness(d)
+    kt = k6[:3, :3]
+    vol = float(np.linalg.det(kt) ** (1.0 / 3.0)) if np.linalg.det(kt) > 0 else 0.0
+    cmd = [hand.command(n, d) for n in ("translation", "rotation")]
+    fallback = [float(np.clip(reduce(b, hand.reduction), *r)) for b, r in
+                ((kt, SLAVE_TRANSLATION_RANGE), (k6[3:, 3:], SLAVE_ROTATION_RANGE))]
+    return [kt[0, 0], kt[1, 1], kt[2, 2], kt[0, 1], kt[0, 2], kt[1, 2], vol, sigma["biceps"], sigma["triceps"], 1.0,
+            *[f if c is None else c for c, f in zip(cmd, fallback)]]
+
+
 class Projection:
     """Stateful reference of the block: an unusable packet repeats the last valid output with valid = 0 (zeros
     before the first valid packet)."""
 
     def __init__(self, data):
         self.data = data
-        self.geo = geometry(data)
+        self.hand = None
+        if data.get("format") == FORMAT3:
+            from hand_model import HandModel
+            self.hand = HandModel.from_dict(data)
+        else:
+            self.geo = geometry(data)
         self.last = None
+
+    def _output(self, sigma):
+        if self.hand is not None:
+            try:
+                return output3(self.hand, sigma)
+            except np.linalg.LinAlgError:
+                return None
+        kc = stiffness(self.data, sigma, self.geo)
+        return None if kc is None else output(kc, sigma, True, self.data)
 
     def step(self, features):
         sigma = sigmas(self.data, features)
-        kc = stiffness(self.data, sigma, self.geo) if sigma is not None else None
-        if kc is None:
+        out = self._output(sigma) if sigma is not None else None
+        if out is None:
             if self.last is None:
                 return [0.0] * len(OUTPUT)
             held = list(self.last)
             held[VALID] = 0.0
             return held
-        self.last = output(kc, sigma, True, self.data)
+        self.last = out
         return list(self.last)

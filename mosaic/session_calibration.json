@@ -39,7 +39,7 @@
   "Calibration": {
     "Type": "PerturbationCalibration",
     "Inputs": ["ESP32", "Robot", "LoadCell", "IMU", "Effort"],
-    "Params": ["/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;90;90", "axes:xyz"],
+    "Params": ["/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_models/stiffness_projection.json", "force:robot", "posture:fixed;90;90", "axes:xyz", "handle_offset:0;0;-0.12"],
     "Path": "/home/f_airob/Mohammadsadegh_Shoushtaridehshal_Master_Thesis/mosaic_logs/calibration/"
   }
 }

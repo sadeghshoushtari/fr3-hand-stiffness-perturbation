@@ -29,6 +29,6 @@ for kind, upper, fore, angles, p in cases:
                 "upper_arm": p.upper_arm.tolist(), "elbow_angle": p.elbow_angle, "shoulder": p.shoulder.tolist(),
                 "torso": p.torso.tolist(), "lengths": arm.muscle_lengths(p).tolist(),
                 "J": arm.arm_jacobian(p).tolist(), "Jm": arm.muscle_jacobian(p).tolist(),
-                "H": arm.muscle_hessians(p).tolist()})
+                "H": arm.muscle_hessians(p).tolist(), "J6": arm.hand_jacobian(p).tolist()})
 Path(sys.argv[1]).write_text(json.dumps({"names": list(ArmModel().names), "cases": out}))
 print(f"{len(out)} cases -> {sys.argv[1]}")

@@ -10,6 +10,8 @@ by packet, the reference of the block):
   phase   the same packets with the phase index, single index on the biceps
   v2      model file format 2 (geometry evaluated by the block, own arm lengths and posture, index direction per pair)
   window  v2 with an index window per pair (window_high_deg, as the calibration writes it)
+  v3      model file format 3 (hand_model.HandModel: one drive, 6x6 hand stiffness, commands from the projection),
+          own arm lengths, posture, handle offset and reduction "mean"; v3vol the same with the volume reduction
 """
 import argparse
 import csv
@@ -26,6 +28,7 @@ import mosaic_export as mx  # noqa: E402
 from fit_model_from_perturbation import session_posture  # noqa: E402
 from arm_model import ArmModel  # noqa: E402
 from stiffness_model import PRIOR, StiffnessModel  # noqa: E402
+from hand_model import HandModel  # noqa: E402
 
 
 def write(out, case, data, packets):
@@ -94,6 +97,15 @@ def main():
     idx["window_high_deg"] = {"biceps": mx.window_high_from_scale(40.0), "triceps": 230.0}
     data = mx.export_v2(arm_model, idx, out / "window_model.json")
     write(out, "window", data, packets)
+    # format 3: the hand model with commands
+    idx3 = {k: v for k, v in idx.items() if k != "posture"} | {"sigma_max": 1.5,
+                                                                 "features": {p: list(mx.FEATURES[p]) for p in mx.PAIRS}}
+    for case, reduction in (("v3", "mean"), ("v3vol", "volume")):
+        hand = HandModel(ArmModel(0.32, 0.26, 0.08), 80.0, 95.0, params={"a0": 0.015, "b": 0.11, "s_w": 2.5, "c_r": 12.0},
+                         reduction=reduction, handle_offset=(0.01, -0.02, -0.11), robot_hold=(1000.0, 10.0))
+        hand.set_commands(0.05, 0.95)
+        data = hand.save(out / f"{case}_model.json", idx3)
+        write(out, case, data, packets)
 
 
 if __name__ == "__main__":

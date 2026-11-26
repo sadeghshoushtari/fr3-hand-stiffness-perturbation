@@ -19,7 +19,8 @@ public sealed record ArmGeometry(double[,] J, double[,] Jm, double[,,] H);
 /// mosaic/blocks/test): posture -> arm Jacobian J = d(handle)/dq and muscle Jacobian J_m = d(muscle length)/dq,
 /// q = (small rotation of the upper arm about the world x, y, z axes, change of elbow flexion), derivatives at q = 0.
 /// Muscle points, l0 and F_max are the MoBL-ARMS fit of arm_model.MUSCLES, for a 0.30 m upper arm and 0.27 m forearm,
-/// scaled to the subject; the triceps wrap over a sphere at the elbow.
+/// scaled to the subject; the triceps wrap over a sphere at the elbow. <see cref="HandJacobian"/> adds the forearm twist
+/// and the two wrist joints and the hand's rotation (6 x 7, for <see cref="HandModel"/>).
 /// </summary>
 public sealed class ArmModel
 {
@@ -171,6 +172,49 @@ public sealed class ArmModel
         return Add(elbow, MatVec(rFa, 0.0, -(ForearmM + HandM), 0.0));
     }
 
+    /// <summary>Joints of the hand model (arm_model.HAND_JOINTS): the 4 arm joints, forearm twist about the forearm
+    /// axis (forearm y), wrist flexion about the twisted forearm x axis and deviation about its z axis (neutral forearm,
+    /// palm facing medially). No muscle line crosses the last three.</summary>
+    public static readonly string[] HandJoints =
+        { "shoulder_x", "shoulder_y", "shoulder_z", "elbow", "forearm_twist", "wrist_flexion", "wrist_deviation" };
+
+    /// <summary>Handle centre and hand rotation at the 7 joint coordinates of <see cref="HandJoints"/>
+    /// (arm_model.hand_frame).</summary>
+    public (double[] Position, double[,] Rotation) HandFrame(Posture posture, double[] q)
+    {
+        var (_, rFa, elbow) = Frames(posture, q);
+        var rHand = MatMul(MatMul(MatMul(rFa, RotY(q[4])), RotX(q[5])), RotZ(q[6]));
+        var wrist = Add(elbow, MatVec(rFa, 0.0, -ForearmM, 0.0));
+        return (Add(wrist, MatVec(rHand, 0.0, -HandM, 0.0)), rHand);
+    }
+
+    /// <summary>J6 (6 x 7) at q = 0: handle velocity (rows 0-2) and hand angular velocity (rows 3-5, world frame) per
+    /// joint velocity of <see cref="HandJoints"/> (arm_model.hand_jacobian, central differences).</summary>
+    public double[,] HandJacobian(Posture posture, double h = 1e-6)
+    {
+        var jac = new double[6, 7];
+        for (int k = 0; k < 7; k++)
+        {
+            var qp = new double[7];
+            var qm = new double[7];
+            qp[k] = h;
+            qm[k] = -h;
+            var (p1, r1) = HandFrame(posture, qp);
+            var (p0, r0) = HandFrame(posture, qm);
+            var w = new double[3, 3];  // r1 r0^T: rotation from -h to +h, small, its skew part is the rotation vector
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    w[i, j] = r1[i, 0] * r0[j, 0] + r1[i, 1] * r0[j, 1] + r1[i, 2] * r0[j, 2];
+            var omega = new[] { 0.5 * (w[2, 1] - w[1, 2]), 0.5 * (w[0, 2] - w[2, 0]), 0.5 * (w[1, 0] - w[0, 1]) };
+            for (int r = 0; r < 3; r++)
+            {
+                jac[r, k] = (p1[r] - p0[r]) / (2 * h);
+                jac[3 + r, k] = omega[r] / (2 * h);
+            }
+        }
+        return jac;
+    }
+
     public double[] MuscleLengths(Posture posture, double[] q)
     {
         var (rUa, rFa, elbow) = Frames(posture, q);
@@ -289,6 +333,18 @@ public sealed class ArmModel
             for (int j = 0; j < 3; j++)
                 r[i, j] = (i == j ? 1 : 0) + s * k[i, j] + c1 * kk[i, j];
         return r;
+    }
+
+    private static double[,] RotX(double angle)
+    {
+        double c = Math.Cos(angle), s = Math.Sin(angle);
+        return new[,] { { 1, 0, 0 }, { 0, c, -s }, { 0, s, c } };
+    }
+
+    private static double[,] RotY(double angle)
+    {
+        double c = Math.Cos(angle), s = Math.Sin(angle);
+        return new[,] { { c, 0, s }, { 0, 1, 0 }, { -s, 0, c } };
     }
 
     private static double[,] RotZ(double angle)

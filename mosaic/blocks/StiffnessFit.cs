@@ -8,10 +8,15 @@ namespace MOSAIC.Models.Elastography;
 /// trial, the arm geometry at its posture and the weights of the stiffness entries in the fit.</summary>
 public sealed record FitTrial(double[,] Stiffness, double[] Sigma, ArmGeometry Geometry, double[,] Weight);
 
+/// <summary>One calibration sample of the hand model: drive d (mean sigma) and the robot-measured translational and
+/// rotational stiffness (empty-handle stiffness subtracted; null where the trial has none).</summary>
+public sealed record HandTrial(double Drive, double[,]? Translation, double[,]? Rotation);
+
 /// <summary>
-/// Identification and fit of projection/stiffness_model.py, without MOSAIC dependencies:
+/// Identification and fit of projection/stiffness_model.py and projection/hand_model.py, without MOSAIC dependencies:
 /// <see cref="Identify"/> = stiffness_model.identified_stiffness, <see cref="Fit"/> = StiffnessModel.fit for
-/// stiffness trials (relative Frobenius error per trial, parameters in [0, 1], pull towards the prior).
+/// stiffness trials (relative Frobenius error per trial, parameters in [0, 1], pull towards the prior),
+/// <see cref="FitHand"/> = HandModel.fit (log error of the reduced scalars, log parameters, ridge towards the prior).
 /// </summary>
 public static class StiffnessFit
 {
@@ -116,13 +121,73 @@ public static class StiffnessFit
         return new Result(xBest, cost, iterations, errors);
     }
 
+    public sealed record HandResult(double[] Parameters, double Cost, int Iterations,
+        List<(int Trial, int Channel, double Measured, double LogError)> Rows, List<(int Trial, int Channel)> Skipped);
+
+    /// <summary>Fits the 4 parameters of the hand model (a0, b, s_w, c_r) to the trials: residual per trial and channel
+    /// log(model / measured) of the reduced scalars, the model being what the calibration robot would measure
+    /// (<see cref="HandModel.MeasuredScalars"/>), plus ridge * (log p - log prior); parameters in log units within
+    /// <see cref="HandModel.Lower"/>..<see cref="HandModel.Upper"/>. A channel whose reduced measurement is not positive
+    /// is left out (Skipped). The model keeps its parameters (apply them with <see cref="HandModel.SetParameters"/>).</summary>
+    public static HandResult FitHand(HandModel model, IReadOnlyList<HandTrial> trials, double[]? prior = null,
+        double ridge = HandModel.DefaultRidge)
+    {
+        prior ??= HandModel.Prior;
+        var rows = new List<(int Trial, int Channel, double Drive, double Measured)>();
+        var skipped = new List<(int Trial, int Channel)>();
+        for (int i = 0; i < trials.Count; i++)
+            for (int ch = 0; ch < 2; ch++)
+            {
+                var k = ch == 0 ? trials[i].Translation : trials[i].Rotation;
+                if (k is null)
+                    continue;
+                double v = HandModel.Reduce(k, model.Reduction);
+                if (double.IsFinite(v) && v > 0)
+                    rows.Add((i, ch, trials[i].Drive, v));
+                else
+                    skipped.Add((i, ch));
+            }
+        if (rows.Count == 0)
+            throw new ArgumentException("no trial with a usable stiffness");
+        var lo = HandModel.Lower.Select(v => Math.Log(v)).ToArray();
+        var hi = HandModel.Upper.Select(v => Math.Log(v)).ToArray();
+        var xPrior = prior.Select(v => Math.Log(v)).ToArray();
+
+        double[] Residuals(double[] x)
+        {
+            var p = x.Select(v => Math.Exp(v)).ToArray();
+            var r = new double[rows.Count + x.Length];
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var m = model.MeasuredScalars(rows[i].Drive, p);
+                double v = m is { } s ? (rows[i].Channel == 0 ? s.T : s.R) : double.NaN;
+                r[i] = double.IsFinite(v) && v > 0 ? Math.Log(v / rows[i].Measured) : 10.0;
+            }
+            for (int k = 0; k < x.Length; k++)
+                r[rows.Count + k] = ridge * (x[k] - xPrior[k]);
+            return r;
+        }
+
+        var x0 = xPrior.Select((v, k) => Math.Clamp(v, lo[k], hi[k])).ToArray();
+        var (xBest, cost, iterations) = BoundedLeastSquares(Residuals, x0, lo, hi);
+        var res = Residuals(xBest);
+        return new HandResult(xBest.Select(v => Math.Exp(v)).ToArray(), cost, iterations,
+            rows.Select((r, i) => (r.Trial, r.Channel, r.Measured, res[i])).ToList(), skipped);
+    }
+
     /// <summary>Levenberg-Marquardt with box bounds: variables at a bound whose gradient points outwards are held,
     /// steps are projected into the box. Cost = 0.5 sum r^2 (as scipy.optimize.least_squares).</summary>
     public static (double[] X, double Cost, int Iterations) BoundedLeastSquares(Func<double[], double[]> residuals,
-        double[] x0, double lower, double upper, int maxIterations = 500)
+        double[] x0, double lower, double upper, int maxIterations = 500) =>
+        BoundedLeastSquares(residuals, x0, Enumerable.Repeat(lower, x0.Length).ToArray(),
+            Enumerable.Repeat(upper, x0.Length).ToArray(), maxIterations);
+
+    /// <summary>As above with bounds per variable.</summary>
+    public static (double[] X, double Cost, int Iterations) BoundedLeastSquares(Func<double[], double[]> residuals,
+        double[] x0, double[] lower, double[] upper, int maxIterations = 500)
     {
         int n = x0.Length;
-        var x = x0.Select(v => Math.Clamp(v, lower, upper)).ToArray();
+        var x = x0.Select((v, k) => Math.Clamp(v, lower[k], upper[k])).ToArray();
         var r = residuals(x);
         double cost = 0.5 * r.Sum(v => v * v);
         double lambda = 1e-3;
@@ -136,8 +201,8 @@ public static class StiffnessFit
                 double h = 1e-7 * Math.Max(1.0, Math.Abs(x[k]));
                 var xp = (double[])x.Clone();
                 var xm = (double[])x.Clone();
-                xp[k] = Math.Min(x[k] + h, upper);
-                xm[k] = Math.Max(x[k] - h, lower);
+                xp[k] = Math.Min(x[k] + h, upper[k]);
+                xm[k] = Math.Max(x[k] - h, lower[k]);
                 var rp = residuals(xp);
                 var rm = residuals(xm);
                 for (int i = 0; i < r.Length; i++)
@@ -154,7 +219,7 @@ public static class StiffnessFit
                         a[p, q] += jac[i, p] * jac[i, q];
             }
             var free = Enumerable.Range(0, n)
-                .Where(k => !(x[k] <= lower && g[k] > 0) && !(x[k] >= upper && g[k] < 0)).ToArray();
+                .Where(k => !(x[k] <= lower[k] && g[k] > 0) && !(x[k] >= upper[k] && g[k] < 0)).ToArray();
             double gradNorm = free.Length == 0 ? 0 : free.Max(k => Math.Abs(g[k]));
             if (gradNorm < 1e-14)
                 break;
@@ -174,7 +239,7 @@ public static class StiffnessFit
                 var step = Solve(m, b);
                 var xNew = (double[])x.Clone();
                 for (int p = 0; p < free.Length; p++)
-                    xNew[free[p]] = Math.Clamp(x[free[p]] + step[p], lower, upper);
+                    xNew[free[p]] = Math.Clamp(x[free[p]] + step[p], lower[free[p]], upper[free[p]]);
                 var rNew = residuals(xNew);
                 double costNew = 0.5 * rNew.Sum(v => v * v);
                 if (costNew < cost)

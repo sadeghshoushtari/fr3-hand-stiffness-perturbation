@@ -21,6 +21,9 @@ Lines that go around a joint (triceps over the elbow) wrap over a sphere of radi
 sphere routing of the MyoCeption model (ICORR 2022), here as the exact shortest path (straight line when it clears
 the sphere, great-circle arc when it does not), so the moment arm stays continuous.
 
+For the 6x6 hand stiffness (hand_model.py), hand_jacobian adds forearm twist, wrist flexion and wrist deviation to q
+(HAND_JOINTS) and the hand's rotation to the endpoint.
+
 Muscle points are given for a reference arm (upper arm 0.30 m, forearm 0.27 m) and scaled to the subject. They are
 fitted to the MoBL-ARMS model (see MUSCLES), so the moment arms follow that model in 3D, not only at the elbow.
 """
@@ -96,6 +99,10 @@ MUSCLES = {
 }
 
 JOINTS = ("shoulder_x", "shoulder_y", "shoulder_z", "elbow")
+# Hand model (hand_jacobian): the 4 arm joints plus forearm twist about the forearm axis (forearm y), then wrist flexion
+# about the twisted forearm x axis and radial/ulnar deviation about its z axis, for a neutral forearm (handshake grip,
+# palm facing medially). No muscle of MUSCLES crosses them: their stiffness is joint-level (hand_model.py).
+HAND_JOINTS = JOINTS + ("forearm_twist", "wrist_flexion", "wrist_deviation")
 
 
 def skew(v):
@@ -110,6 +117,16 @@ def rotvec_to_matrix(v):
         return np.eye(3) + skew(v)
     k = skew(v / angle)
     return np.eye(3) + np.sin(angle) * k + (1.0 - np.cos(angle)) * k @ k
+
+
+def rot_x(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+
+def rot_y(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
 
 
 def rot_z(angle):
@@ -182,6 +199,27 @@ class ArmModel:
     def handle(self, posture, q=np.zeros(4)):
         _, r_fa, elbow = self._frames(posture, q)
         return elbow + r_fa @ np.array([0.0, -(self.forearm_m + self.hand_m), 0.0])
+
+    def hand_frame(self, posture, q=np.zeros(7)):
+        """Handle centre and hand rotation at the 7 joint coordinates of HAND_JOINTS (the wrist sits forearm_m from
+        the elbow, the handle centre hand_m further along the hand). At q = 0 the handle is handle(posture)."""
+        _, r_fa, elbow = self._frames(posture, q[:4])
+        r_hand = r_fa @ rot_y(q[4]) @ rot_x(q[5]) @ rot_z(q[6])
+        wrist = elbow + r_fa @ np.array([0.0, -self.forearm_m, 0.0])
+        return wrist + r_hand @ np.array([0.0, -self.hand_m, 0.0]), r_hand
+
+    def hand_jacobian(self, posture, h=1e-6):
+        """J6 (6 x 7): handle velocity (rows 0-2) and hand angular velocity (rows 3-5, world frame) per joint velocity
+        of HAND_JOINTS, at q = 0. Rows 0-2 of the first 4 columns are arm_jacobian."""
+        cols = []
+        for k in range(7):
+            dq = np.zeros(7)
+            dq[k] = h
+            (p1, r1), (p0, r0) = self.hand_frame(posture, dq), self.hand_frame(posture, -dq)
+            w = r1 @ r0.T  # rotation from -h to +h, small: its skew part is the rotation vector
+            omega = 0.5 * np.array([w[2, 1] - w[1, 2], w[0, 2] - w[2, 0], w[1, 0] - w[0, 1]])
+            cols.append(np.concatenate([(p1 - p0) / (2 * h), omega / (2 * h)]))
+        return np.column_stack(cols)
 
     def muscle_points(self, posture, q=np.zeros(4)):
         """Attachment and via points per muscle (wrap entries left out), world frame."""

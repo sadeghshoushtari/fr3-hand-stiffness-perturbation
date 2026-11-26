@@ -32,12 +32,17 @@ namespace MOSAIC.Models.Elastography;
 ///   axes:xyz (Cartesian axes fitted), arm:0.30;0.27;0.07 (upper arm, forearm, hand in m), index:phase|speed2,
 ///   drive_hz:45, spacing_m:0.02, lag_offset_deg:0, single:biceps|triceps, settle_s:0.4 (rest settling),
 ///   capture_settle_s:0.35 (hold settling), min_cycles:3, range_t:300;700 (N/m) and range_r:20;40 (Nm/rad) (slave
-///   ranges of the translational and rotational commands: the operator's relaxed..max span is mapped onto them)
+///   ranges of the translational and rotational commands: the operator's relaxed..max span is mapped onto them),
+///   model:hand|groups (hand, default: the two-pair hand model, model file format 3, both commands from the
+///   projection; groups: the group model of format 2 with the command lines), reduction:mean|volume (hand model, how
+///   a 3x3 block becomes one number, default mean), handle_offset:x;y;z (hand model: handle centre - robot flange in m,
+///   robot base frame, default 0;0;0), ridge:0.3 (hand model: pull of the parameters towards the prior)
 ///   esp32:, robot:, loadcell:, imu:, plan:, effort: names of the input blocks (defaults ESP32, Robot, LoadCell, IMU,
 ///   PerturbationPlan, Effort).
 /// The cycles come from the phase in the robot state (perturbation.cpp); a Stimulus block (plan:) can drive them instead.
 /// Output per finished trial: Vector [trial, code, cycles, kxx, kyy, kzz, kxy, kxz, kyz] (K zeros if not identified);
-/// after a fit: Vector [-1, 9, trials, a_1, b_1, ..., a_4, b_4].
+/// after a fit: Vector [-1, 9, trials, a0, b, s_w, c_r] (hand model) or [-1, 9, trials, a_1, b_1, ..., a_4, b_4]
+/// (groups).
 /// </example>
 public sealed class PerturbationCalibration : BaseBlock
 {
@@ -92,6 +97,10 @@ public sealed class PerturbationCalibration : BaseBlock
                 case "min_cycles": opt.MinCycles = (int)Num(value); break;
                 case "range_t": opt.TranslationCommandRange = v.Select(Num).ToArray(); break;
                 case "range_r": opt.RotationCommandRange = v.Select(Num).ToArray(); break;
+                case "model": opt.ModelKind = value.ToLowerInvariant(); break;
+                case "reduction": opt.Reduction = value.ToLowerInvariant(); break;
+                case "handle_offset": opt.HandleOffsetM = v.Select(Num).ToArray(); break;
+                case "ridge": opt.Ridge = Num(value); break;
                 default:
                     if (_roles.ContainsKey(key)) _roles[key] = value;
                     else throw new ArgumentException($"[PerturbationCalibration] unknown parameter '{key}'");
@@ -100,9 +109,17 @@ public sealed class PerturbationCalibration : BaseBlock
         }
         if (opt.ForceMode is not ("robot" or "wrench" or "loadcell"))
             throw new ArgumentException($"[PerturbationCalibration] force must be robot, wrench or loadcell");
+        if (opt.ModelKind is not ("hand" or "groups"))
+            throw new ArgumentException("[PerturbationCalibration] model must be hand or groups");
+        if (opt.Reduction is not ("mean" or "volume"))
+            throw new ArgumentException("[PerturbationCalibration] reduction must be mean or volume");
+        if (opt.HandleOffsetM.Length != 3)
+            throw new ArgumentException("[PerturbationCalibration] handle_offset needs x;y;z in m");
         _core = new PerturbationCalibrationCore(opt) { Log = Report };
         Report($"model file {opt.ModelPath}, force {opt.ForceMode}, posture "
-               + (opt.ImuPosture ? "IMU" : $"fixed {opt.UpperArmDeg};{opt.ElbowDeg} deg") + $", axes {opt.Axes}");
+               + (opt.ImuPosture ? "IMU" : $"fixed {opt.UpperArmDeg};{opt.ElbowDeg} deg") + $", axes {opt.Axes}, model "
+               + opt.ModelKind + (opt.ModelKind == "hand"
+                   ? $" (reduction {opt.Reduction}, handle offset {string.Join(";", opt.HandleOffsetM)} m)" : ""));
     }
 
     public static PerturbationCalibration ConfigureInput(IServiceProvider sp, JsonModel m)
@@ -163,7 +180,7 @@ public sealed class PerturbationCalibration : BaseBlock
         if (_core.FittedModel is { } model && !ReferenceEquals(model, _fitPublished))
         {
             Publish(Vector<double>.Build.DenseOfArray(new[] { -1.0, PerturbationCalibrationCore.FitCode, _core.Trials.Count }
-                .Concat(model.Groups.SelectMany(g => new[] { g.A, g.B })).ToArray()));
+                .Concat(model.Hand?.P ?? model.Groups.SelectMany(g => new[] { g.A, g.B })).ToArray()));
             _fitPublished = model;
         }
     }

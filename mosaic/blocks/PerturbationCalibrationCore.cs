@@ -40,10 +40,17 @@ namespace MOSAIC.Models.Elastography;
 /// Fit: K_empty (mean of empty trials) is subtracted; relaxed reference = circular mean of the relaxed trials;
 /// direction per pair = the sign for which the index (<see cref="StiffnessProjectionModel.WrapIndexDeg"/>) rises with
 /// the effort code over the trials; index per trial, scale = its largest value, sigma = max(index, 0) / scale;
-/// (a_g, b_g) fitted with <see cref="StiffnessFit.Fit"/>. Commands: the overall translational and rotational stiffness
-/// of each trial (mean of the diagonal of K - K_empty and of K_rot - K_rot,empty) fitted by least squares as
-/// c0 + c1 * mean sigma; the line at the relaxed and the max trials is mapped onto the slave's range
-/// (StiffnessProjectionModel.CommandMap).
+/// then the model (<see cref="Options.ModelKind"/>):
+///   hand (default, model file format 3, <see cref="HandModel"/>): drive d = mean sigma per trial; the 4 parameters
+///     (a0, b, s_w, c_r) fitted with <see cref="StiffnessFit.FitHand"/> to the reduced translational and rotational
+///     stiffness of each trial (K - K_empty, K_rot - K_rot,empty), the model being what this robot measures (flange
+///     as reference point, <see cref="Options.HandleOffsetM"/>; the other degrees of freedom held by the robot springs
+///     seen during the captures). Commands: the operator's reduced translational and rotational stiffness of the
+///     projection at the mean drive of the relaxed and of the max trials span the slave's range.
+///   groups (format 2): (a_g, b_g) fitted with <see cref="StiffnessFit.Fit"/>; commands: the overall translational and
+///     rotational stiffness of each trial (mean of the diagonal) fitted as c0 + c1 * mean sigma, the line at the
+///     relaxed and the max trials mapped onto the slave's range (StiffnessProjectionModel.CommandMap).
+/// <see cref="Replay"/> runs the fit and the validation on the trials of a session file (offline check).
 /// Robot state vector (perturbation.cpp): t, x, y, z, x_d, y_d, z_d, F_ext x, y, z, q_w, q_x, q_y, q_z, K_r, phase,
 /// trial number, desired rotation offset x, y, z, rotational K_r (Nm/rad), step kind (0 translation, 1 rotation).
 /// </remarks>
@@ -77,9 +84,19 @@ public sealed class PerturbationCalibrationCore
         public double[] RotationCommandRange { get; set; } =
             (double[])StiffnessProjectionModel.SlaveRotationRange.Clone();     // Nm/rad
         public int MinCycles { get; set; } = 3;
+        /// <summary>"hand" (format 3, both commands from the projection) or "groups" (format 2).</summary>
+        public string ModelKind { get; set; } = "hand";
+        /// <summary>Hand model: "mean" (mean of the diagonal) or "volume" (cube root of the determinant).</summary>
+        public string Reduction { get; set; } = "mean";
+        /// <summary>Hand model: handle centre - flange of this robot, m, base frame (the robot turns its flange).</summary>
+        public double[] HandleOffsetM { get; set; } = new double[3];
+        public double Ridge { get; set; } = HandModel.DefaultRidge;
     }
 
-    public sealed record Cycle(double[] Dx, double[] DxDesired, double[] Df, bool Rotation = false);
+    /// <summary>One push or turn. Hold: the robot stiffness that held the other degrees of freedom during the capture
+    /// (translation: rotational K_r, Nm/rad; rotation: translational K_r, N/m), NaN if the state has none.</summary>
+    public sealed record Cycle(double[] Dx, double[] DxDesired, double[] Df, bool Rotation = false,
+        double Hold = double.NaN);
 
     /// <summary>A trial; PhaseSpread: circular standard deviation of each pair's phase over the trial (deg), Packets:
     /// feature vectors received during the trial (with or without a phase).</summary>
@@ -132,13 +149,16 @@ public sealed class PerturbationCalibrationCore
     private CheckReport? _check;
     private JsonObject? _validationCheck;
 
-    /// <summary>Validation trial: 3x3 model prediction vs measurement (translation), and the two overall stiffnesses
-    /// (mean of the diagonal) predicted by the command maps before the slave's range is applied vs measured, with
-    /// the command the slave would get.</summary>
+    /// <summary>Validation trial: 3x3 model prediction vs measurement (translation), the two overall stiffnesses as the
+    /// robot measured them and as the model predicts them (groups: the command lines, mean of the diagonal; hand: the
+    /// reduced blocks of what the robot would measure), the command the slave would get, and the command the robot's
+    /// measurement maps to (hand: the measurement moved to the handle centre with the model's ratio of operator to
+    /// measured stiffness at the trial's drive).</summary>
     private sealed record Validation(double[,] Predicted, double[,] Measured, double Error, double TranslationMeasured,
         double TranslationPredicted, double TranslationCommand, double? RotationMeasured, double? RotationPredicted,
-        double? RotationCommand);
+        double? RotationCommand, double TranslationFromMeasurement, double? RotationFromMeasurement);
     private readonly string _sessionStamp;
+    private double[]? _replayDirection;  // Replay: the session's index direction instead of the previous model file's
 
     public List<Trial> Trials { get; } = new();
     public Action<string> Log { get; set; } = _ => { };
@@ -362,7 +382,7 @@ public sealed class PerturbationCalibrationCore
             var thd = _capture.Rd.Zip(_rest.Rd, (a, b) => a / _capture.NRot - b / _rest.NRot).ToArray();
             double krot = _capture.KRot / _capture.NRot;
             var dm = thd.Zip(th, (d, x) => krot * (d - x)).ToArray();
-            _cycles.Add(new Cycle(th, thd, dm, Rotation: true));
+            _cycles.Add(new Cycle(th, thd, dm, Rotation: true, Hold: _captureKr / _capture.N));
             Log($"  cycle {_cycles.Count} (rotation): dtheta_d [{Fmt(thd, 180 / Math.PI)}] deg, "
                 + $"dtheta [{Fmt(th, 180 / Math.PI)}] deg, dM [{Fmt(dm, 1)}] Nm");
             return;
@@ -381,7 +401,7 @@ public sealed class PerturbationCalibrationCore
         {
             df = _capture.Mean(_capture.F).Zip(_rest.Mean(_rest.F), (a, b) => a - b).ToArray();
         }
-        _cycles.Add(new Cycle(dx, dxd, df));
+        _cycles.Add(new Cycle(dx, dxd, df, Hold: _capture.NRot > 0 ? _capture.KRot / _capture.NRot : double.NaN));
         Log($"  cycle {_cycles.Count}: dx_d [{Fmt(dxd, 1000)}] mm, dx [{Fmt(dx, 1000)}] mm, dF [{Fmt(df, 1)}] N");
     }
 
@@ -475,6 +495,11 @@ public sealed class PerturbationCalibrationCore
             double raw = StiffnessProjectionModel.RawIndex(model.Index, src, ph);
             sigma[p] = Math.Min(Math.Max(raw, 0.0) / model.Index.Scale[src], model.Index.SigmaMax);
         }
+        if (model.Hand is { } hand)
+        {
+            ValidateHand(trial, model, hand, sigma);
+            return;
+        }
         var g = _arm.Geometry(trial.Posture);
         var pred = model.Stiffness(sigma, model.Groups, g.J, g.Jm, g.H);
         if (pred is null)
@@ -500,7 +525,9 @@ public sealed class PerturbationCalibrationCore
         double tCmd = model.TranslationCommand?.Eval(sigma) ?? double.NaN;
         double? rMeas = trial.KRot is null ? null : Overall(trial.KRot, _kRotEmpty);
         double? rPred = model.RotationCommand?.Line(sigma), rCmd = model.RotationCommand?.Eval(sigma);
-        _validation[trial.Number] = new Validation(pred, meas, err, tMeas, tPred, tCmd, rMeas, rPred, rCmd);
+        _validation[trial.Number] = new Validation(pred, meas, err, tMeas, tPred, tCmd, rMeas, rPred, rCmd,
+            model.TranslationCommand?.Map(tMeas) ?? double.NaN,
+            rMeas is double rv ? model.RotationCommand?.Map(rv) : null);
         static string Capped(double predicted, double? command, string format) =>
             command is double c ? $", slave command {c.ToString(format)}" : "";
         Log($"validation trial {trial.Number} ({Label(trial.Code)}): sigma {sigma[0]:F2} {sigma[1]:F2}; "
@@ -511,6 +538,56 @@ public sealed class PerturbationCalibrationCore
                 : "no rotation command or measurement; ")
             + $"3x3 model: measured K diag {meas[0, 0]:F0} {meas[1, 1]:F0} {meas[2, 2]:F0}, predicted "
             + $"{pred[0, 0]:F0} {pred[1, 1]:F0} {pred[2, 2]:F0} N/m, relative error {err:F2}");
+    }
+
+    /// <summary>Validation with the hand model: drive of the trial; translational and rotational stiffness the robot
+    /// measured vs what the model says it would measure; slave commands predicted vs from the measurement.</summary>
+    private void ValidateHand(Trial trial, StiffnessProjectionModel model, HandModel hand, double[] sigma)
+    {
+        double d = StiffnessProjectionModel.Drive(sigma);
+        var predicted = hand.Measured(d);  // session posture, as the fit
+        var op = hand.Scalars(d);
+        if (predicted is not { } pm || op is not { } o)
+        {
+            Log($"validation trial {trial.Number}: model not positive definite at drive {d:F2}");
+            return;
+        }
+        var meas = Minus(trial.K!, _kEmpty);
+        double num = 0, den = 0;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                if (_o.Axes.Contains("xyz"[r]) && _o.Axes.Contains("xyz"[c]))
+                {
+                    num += (pm.T[r, c] - meas[r, c]) * (pm.T[r, c] - meas[r, c]);
+                    den += meas[r, c] * meas[r, c];
+                }
+        double err = Math.Sqrt(num / Math.Max(den, 1e-12));
+        double tMeas = HandModel.Reduce(meas, hand.Reduction), tPred = HandModel.Reduce(pm.T, hand.Reduction);
+        double tCmd = model.TranslationCommand?.Map(o.T) ?? double.NaN;
+        double tFromMeas = model.TranslationCommand?.Map(tMeas * o.T / tPred) ?? double.NaN;
+        double? rMeas = trial.KRot is null ? null : HandModel.Reduce(Minus(trial.KRot, _kRotEmpty), hand.Reduction);
+        double rPred = HandModel.Reduce(pm.R, hand.Reduction);
+        double? rCmd = model.RotationCommand?.Map(o.R);
+        double? rFromMeas = rMeas is double rm0 ? model.RotationCommand?.Map(rm0 * o.R / rPred) : null;
+        _validation[trial.Number] = new Validation(pm.T, meas, err, tMeas, tPred, tCmd, rMeas, rPred, rCmd, tFromMeas,
+            rFromMeas);
+        string F(double? v, string f) => v is double x && double.IsFinite(x) ? x.ToString(f, CultureInfo.InvariantCulture) : "none";
+        Log($"validation trial {trial.Number} ({Label(trial.Code)}): drive {d:F2}; translation measured {F(tMeas, "F0")} "
+            + $"N/m, model {F(tPred, "F0")} N/m ({RelDiff(tPred, tMeas)}); rotation measured {F(rMeas, "F1")} Nm/rad, "
+            + $"model {F(rPred, "F1")} Nm/rad" + (rMeas is double rm1 ? $" ({RelDiff(rPred, rm1)})" : "")
+            + $"; slave commands translation {F(tCmd, "F0")} N/m (from the measurement {F(tFromMeas, "F0")}), rotation "
+            + $"{F(rCmd, "F1")} Nm/rad (from the measurement {F(rFromMeas, "F1")}); 3x3: measured K diag {meas[0, 0]:F0} "
+            + $"{meas[1, 1]:F0} {meas[2, 2]:F0}, model {pm.T[0, 0]:F0} {pm.T[1, 1]:F0} {pm.T[2, 2]:F0} N/m, relative "
+            + $"error {err:F2}");
+    }
+
+    private static double[,] Minus(double[,] a, double[,] b)
+    {
+        var m = new double[3, 3];
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                m[r, c] = a[r, c] - b[r, c];
+        return m;
     }
 
     /// <summary>Overall stiffness of a trial: mean of the diagonal of K - K_empty.</summary>
@@ -584,7 +661,9 @@ public sealed class PerturbationCalibrationCore
             SingleIndex = _o.SingleIndex,
         };
         var previous = TryLoad(_o.ModelPath);
-        if (previous is not null)
+        if (_replayDirection is not null)
+            index.Direction = (double[])_replayDirection.Clone();
+        else if (previous is not null)
             index.Direction = (double[])previous.Index.Direction.Clone();
         double strongest = muscle.Max(t => t.Code);
         var msg = new List<string>();
@@ -636,6 +715,9 @@ public sealed class PerturbationCalibrationCore
         Log($"fit: index scale biceps {index.Scale[0]:F1} deg, triceps {index.Scale[1]:F1} deg; window "
             + $"{index.WindowHighDeg[0] - 360:F0}..{index.WindowHighDeg[0]:F0} and "
             + $"{index.WindowHighDeg[1] - 360:F0}..{index.WindowHighDeg[1]:F0} deg");
+        if (_o.ModelKind != "groups")
+            return FitHand(usable, raw.Select(r => r.Select((v, p) => Math.Max(v, 0.0) / index.Scale[p]).ToArray()).ToList(),
+                index, kEmpty, empty.Count);
 
         var weight = new double[3, 3];
         foreach (char a in _o.Axes)
@@ -696,6 +778,95 @@ public sealed class PerturbationCalibrationCore
         Log($"fit: {fitTrials.Count} trials, cost {res.Cost:E3}, relative error per trial "
             + string.Join(" ", res.TrialErrors.Select(e => e.ToString("F2", CultureInfo.InvariantCulture))));
         Log("fit: (a, b) " + string.Join(", ", model.Groups.Select(g => $"{g.Name} ({g.A:F3}, {g.B:F3})")));
+        Log($"fit: model written to {_o.ModelPath}");
+        SaveSession(model);
+        return model;
+    }
+
+    /// <summary>Fit of the hand model (format 3): see the class remarks.</summary>
+    private StiffnessProjectionModel FitHand(List<Trial> usable, List<double[]> sigmas,
+        StiffnessProjectionModel.IndexDefinition index, double[,] kEmpty, int emptyCount)
+    {
+        var fitted = Trials.Where(t => !_validationTrials.Contains(t.Number)).ToList();
+        _kRotEmpty = MeanMatrix(fitted.Where(t => t.Code < -0.5 && t.KRot is not null).Select(t => t.KRot!).ToList());
+        var drives = sigmas.Select(StiffnessProjectionModel.Drive).ToList();
+        var trials = usable.Select((t, i) => new HandTrial(drives[i], Minus(t.K!, kEmpty),
+            t.KRot is null ? null : Minus(t.KRot, _kRotEmpty))).ToList();
+        var cycles = fitted.SelectMany(t => t.Cycles).ToList();
+        double Hold(bool rotation, double fallback)
+        {
+            var h = cycles.Where(c => c.Rotation == rotation && double.IsFinite(c.Hold)).Select(c => c.Hold).ToList();
+            return h.Count > 0 ? h.Average() : fallback;
+        }
+        double holdT = Hold(true, HandModel.RobotTranslationHold), holdR = Hold(false, HandModel.RobotRotationHold);
+        var hand = new HandModel(_arm, _o.UpperArmDeg, _o.ElbowDeg, null, _o.Reduction, _o.HandleOffsetM, holdT, holdR);
+        var res = StiffnessFit.FitHand(hand, trials, null, _o.Ridge);
+        hand.SetParameters(res.Parameters);
+        string Inv(double v, string f) => v.ToString(f, CultureInfo.InvariantCulture);
+        Log($"fit: hand model (format 3), reduction {hand.Reduction}, ridge {_o.Ridge:G3}, handle offset "
+            + $"[{Fmt(hand.HandleOffset, 1)}] m, robot holds {holdT:F0} N/m and {holdR:F1} Nm/rad"
+            + (_o.ImuPosture ? "; all trials at the session posture (the hand model does not use the trial IMU postures yet)" : ""));
+        Log($"fit: a0 {Inv(res.Parameters[0], "G4")}, b {Inv(res.Parameters[1], "G4")}, s_w {Inv(res.Parameters[2], "G4")}, "
+            + $"c_r {Inv(res.Parameters[3], "G4")} Nm/rad (prior {string.Join(", ", HandModel.Prior.Select(v => Inv(v, "G3")))}); "
+            + $"cost {res.Cost:E3}, {res.Iterations} iterations");
+        foreach (int ch in new[] { 0, 1 })
+        {
+            var rows = res.Rows.Where(r => r.Channel == ch).ToList();
+            Log($"fit: {(ch == 0 ? "translation" : "rotation")} per trial (drive: measured / model {(ch == 0 ? "N/m" : "Nm/rad")}) "
+                + (rows.Count == 0 ? "no trial" : string.Join(", ", rows.Select(r =>
+                    $"{drives[r.Trial]:F2}: {Inv(r.Measured, ch == 0 ? "F0" : "F1")} / "
+                    + Inv(r.Measured * Math.Exp(r.LogError), ch == 0 ? "F0" : "F1")))));
+        }
+        if (res.Skipped.Count > 0)
+            Log("fit: left out (measured stiffness not positive): " + string.Join(", ", res.Skipped.Select(r =>
+                $"trial {usable[r.Trial].Number} {(r.Channel == 0 ? "translation" : "rotation")}")));
+        if (!trials.Any(t => t.Rotation is not null))
+            Log("fit: no trial has a rotational stiffness: s_w and c_r stay near the prior");
+
+        double MeanDrive(Func<double, bool> code, double fallback)
+        {
+            var ds = Enumerable.Range(0, usable.Count).Where(i => code(usable[i].Code)).Select(i => drives[i]).ToList();
+            return ds.Count > 0 ? ds.Average() : fallback;
+        }
+        double dLow = MeanDrive(c => Math.Abs(c) < 1e-6, drives.Min()), dHigh = MeanDrive(c => c > 0.999, drives.Max());
+        var model = new StiffnessProjectionModel(hand, index);
+        if (hand.Scalars(dLow) is { } lo && hand.Scalars(dHigh) is { } hi)
+        {
+            var rt = _o.TranslationCommandRange;
+            var rr = _o.RotationCommandRange;
+            model.TranslationCommand = new StiffnessProjectionModel.CommandMap(0, 0, rt[0], rt[1], lo.T, hi.T);
+            model.RotationCommand = new StiffnessProjectionModel.CommandMap(0, 0, rr[0], rr[1], lo.R, hi.R);
+            Log($"fit: translation command: operator {lo.T:F0}-{hi.T:F0} N/m (projection at drive {dLow:F2} and "
+                + $"{dHigh:F2}) mapped onto {rt[0]}-{rt[1]} N/m; rotation command: operator {lo.R:F1}-{hi.R:F1} Nm/rad "
+                + $"mapped onto {rr[0]}-{rr[1]} Nm/rad" + (hi.T <= lo.T ? "; WARNING: no span (max drive not above relaxed), "
+                + "the commands stay at the minimum" : ""));
+        }
+        else
+            Log("fit: model not positive definite at the relaxed or the max drive: no commands");
+        model.FitReport = new JsonObject
+        {
+            ["date"] = DateTime.Now.ToString("s", CultureInfo.InvariantCulture),
+            ["source"] = "PerturbationCalibration",
+            ["model"] = "hand",
+            ["force"] = _o.ForceMode,
+            ["axes"] = _o.Axes,
+            ["reduction"] = hand.Reduction,
+            ["ridge"] = _o.Ridge,
+            ["prior"] = new JsonArray(HandModel.Prior.Select(v => (JsonNode)v).ToArray()),
+            ["cost"] = res.Cost,
+            ["iterations"] = res.Iterations,
+            ["stiffness_trials"] = trials.Count,
+            ["empty_trials"] = emptyCount,
+            ["drive_relaxed"] = dLow,
+            ["drive_max"] = dHigh,
+            ["log_error"] = new JsonArray(res.Rows.Select(r => (JsonNode)new JsonObject
+            {
+                ["trial"] = usable[r.Trial].Number, ["channel"] = r.Channel == 0 ? "translation" : "rotation",
+                ["drive"] = drives[r.Trial], ["measured"] = r.Measured, ["log_error"] = r.LogError,
+            }).ToArray()),
+        };
+        model.Save(_o.ModelPath);
+        FittedModel = model;
         Log($"fit: model written to {_o.ModelPath}");
         SaveSession(model);
         return model;
@@ -866,7 +1037,7 @@ public sealed class PerturbationCalibrationCore
         if (vr is null || vx is null)
             return;
         double range = map.Max - map.Min;
-        double Measured(Validation v) => map.Map(v.TranslationMeasured);
+        double Measured(Validation v) => v.TranslationFromMeasurement;
         double effort = vx.TranslationMeasured / Math.Max(vr.TranslationMeasured, 1.0);
         bool span = vx.TranslationCommand - vr.TranslationCommand >= CheckMinValidationSpan * range;
         bool close = Math.Abs(vr.TranslationCommand - Measured(vr)) <= CheckMaxValidationError * range
@@ -874,9 +1045,14 @@ public sealed class PerturbationCalibrationCore
         string result = effort < CheckMinEffortRatio ? "REPEAT VALIDATION" : span && close ? "PASS" : "FAIL";
         string Pair(string label, Validation v) =>
             $"{label} {v.TranslationCommand:F0} / {Measured(v):F0}";
+        string RotPair(string label, Validation v) => v.RotationCommand is double c && v.RotationFromMeasurement is double m
+            ? $"{label} {c:F1} / {m:F1}" : $"{label} none";
         string detail = "slave command predicted / from the robot's measurement: " + Pair("relaxed", vr)
                         + (vm is null ? "" : ", " + Pair("medium", vm)) + ", " + Pair("max", vx)
-                        + $" N/m; robot max / relaxed {effort:F1}x";
+                        + $" N/m; robot max / relaxed {effort:F1}x"
+                        + (model.RotationCommand is null ? "" : "; rotation (not part of the verdict) "
+                           + RotPair("relaxed", vr) + (vm is null ? "" : ", " + RotPair("medium", vm)) + ", "
+                           + RotPair("max", vx) + " Nm/rad");
         Log("VALIDATION CHECK: " + detail);
         Log($"VALIDATION: {result} - " + result switch
         {
@@ -926,6 +1102,7 @@ public sealed class PerturbationCalibrationCore
                 ["cycles"] = new JsonArray(t.Cycles.Select(c => (JsonNode)new JsonObject
                 {
                     ["dx"] = Arr(c.Dx), ["dx_d"] = Arr(c.DxDesired), ["dF"] = Arr(c.Df), ["rotation"] = c.Rotation,
+                    ["hold"] = double.IsFinite(c.Hold) ? c.Hold : null,
                 }).ToArray()),
             }).ToArray());
             var root = new JsonObject
@@ -946,6 +1123,78 @@ public sealed class PerturbationCalibrationCore
         {
             Log($"could not write the session file: {e.Message}");
         }
+    }
+
+    // --- replay ---
+
+    /// <summary>Offline check of the fit on a logged session (calibration_*.json of this block): its trials are added in
+    /// order; the trials before the first validation trial are checked and fitted (as the session did, or at the end if
+    /// the session had no validation trial), the later ones validated. Trials take the session posture of the options
+    /// (or their IMU posture with ImuPosture). Writes the model file and a new session file like a live session.</summary>
+    public StiffnessProjectionModel? Replay(JsonElement session)
+    {
+        // the session started from the direction of its previous model file, which a replay does not have; the
+        // session's own direction stands in for it (it is that direction wherever the trials did not set one)
+        if (session.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.Object
+            && m.TryGetProperty("index", out var ix) && ix.TryGetProperty("direction", out var dir)
+            && dir.ValueKind == JsonValueKind.Object)
+            _replayDirection = StiffnessProjectionModel.Pairs.Select(p => dir.GetProperty(p).GetDouble()).ToArray();
+        bool fitted = false;
+        foreach (var t in session.GetProperty("trials").EnumerateArray())
+        {
+            bool validation = t.TryGetProperty("validation", out var v) && v.ValueKind == JsonValueKind.Object;
+            if (validation && !fitted)
+            {
+                LogCheck();
+                Fit();
+                fitted = true;
+            }
+            var trial = ParseTrial(t, Trials.Count + 1);
+            Trials.Add(trial);
+            Log($"replay: trial {trial.Number} ({Label(trial.Code)})" + (fitted ? ", validation" : ""));
+            if (fitted && FittedModel is not null)
+            {
+                _validationTrials.Add(trial.Number);
+                Validate(trial, FittedModel);
+                CheckValidation(FittedModel);
+            }
+        }
+        if (!fitted)
+        {
+            LogCheck();
+            Fit();
+        }
+        return FittedModel;
+    }
+
+    private Trial ParseTrial(JsonElement t, int number)
+    {
+        static double[,]? Mat(JsonElement e)
+        {
+            if (e.ValueKind != JsonValueKind.Array)
+                return null;
+            var m = new double[3, 3];
+            for (int r = 0; r < 3; r++)
+                for (int c = 0; c < 3; c++)
+                    m[r, c] = e[r][c].GetDouble();
+            return m;
+        }
+        static double[] Vec(JsonElement e) => e.EnumerateArray().Select(x => x.GetDouble()).ToArray();
+        static double?[] Opt(JsonElement e) => e.EnumerateArray()
+            .Select(x => x.ValueKind == JsonValueKind.Number ? x.GetDouble() : (double?)null).ToArray();
+        var cycles = t.GetProperty("cycles").EnumerateArray().Select(c => new Cycle(Vec(c.GetProperty("dx")),
+            Vec(c.GetProperty("dx_d")), Vec(c.GetProperty("dF")), c.GetProperty("rotation").GetBoolean(),
+            c.TryGetProperty("hold", out var h) && h.ValueKind == JsonValueKind.Number ? h.GetDouble() : double.NaN)).ToList();
+        double[]? imu = t.TryGetProperty("imu", out var q) && q.ValueKind == JsonValueKind.Array ? Vec(q) : null;
+        var posture = _o.ImuPosture && imu is not null
+            ? ArmModel.FromQuaternions(imu[..4], imu[4..8], ArmModel.SessionTorso)
+            : ArmModel.SessionPosture(_o.UpperArmDeg, _o.ElbowDeg);
+        var counts = t.GetProperty("phase_packets").EnumerateArray().Select(x => (int)x.GetDouble()).ToArray();
+        return new Trial(number, t.GetProperty("code").GetDouble(), Mat(t.GetProperty("K")), cycles,
+            Opt(t.GetProperty("phase_deg")), counts, posture, imu,
+            t.TryGetProperty("K_rot", out var kr) ? Mat(kr) : null,
+            t.TryGetProperty("phase_spread_deg", out var sp) ? Opt(sp) : null,
+            t.TryGetProperty("packets", out var pk) ? pk.GetInt32() : 0);
     }
 
     // --- helpers ---

@@ -11,6 +11,7 @@
     <Compile Include="../../ArmModel.cs" />
     <Compile Include="../../StiffnessProjectionModel.cs" />
     <Compile Include="../../StiffnessFit.cs" />
+    <Compile Include="../../HandModel.cs" />
     <Compile Include="../../PerturbationCalibrationCore.cs" />
   </ItemGroup>
 </Project>

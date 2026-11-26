@@ -8,16 +8,19 @@ using System.Text.Json.Nodes;
 namespace MOSAIC.Models.Elastography;
 
 /// <summary>
-/// Elastography features + arm posture -> Cartesian hand stiffness (N/m, robot base frame) with the muscle-space model
-/// of projection/stiffness_model.py. Reads the model file written by projection/mosaic_export.py or by the
-/// PerturbationCalibration block; projection/mosaic_export.py is the reference this class is checked against
-/// (mosaic/blocks/test).
+/// Elastography features + arm posture -> Cartesian hand stiffness (N/m, robot base frame) and the slave's two commands,
+/// with the muscle-space model of projection/stiffness_model.py (formats 1, 2) or the two-pair hand model of
+/// projection/hand_model.py (format 3, <see cref="HandModel"/>). Reads the model file written by
+/// projection/mosaic_export.py or by the PerturbationCalibration block; projection/mosaic_export.py is the reference
+/// this class is checked against (mosaic/blocks/test).
 /// </summary>
 /// <remarks>
 /// Model file formats:
 ///   "stiffness_projection/1": geometry (J, J_m, H) evaluated at the session posture, index direction -1 for both pairs.
 ///   "stiffness_projection/2": arm lengths and session posture; the geometry is evaluated here with <see cref="ArmModel"/>,
 ///   at the session posture or at the posture set by <see cref="SetPosture"/> (IMUs); index direction per pair.
+///   "stiffness_projection/3": the hand model (<see cref="HandModel"/>): one drive d = mean sigma, 6x6 hand stiffness K6
+///   at the handle centre, both commands from the projection; arm lengths, session posture and IMU posture as format 2.
 /// Per feature vector (esp32_robot_stiffness output, 12 doubles):
 ///   phase of each pair = atan2(sin, cos); index "phase" = direction * (phase - relaxed) wrapped to
 ///   [high - 360, high) deg, high = window_high_deg of the pair (270 when the file has none; <see cref="WrapIndexDeg"/>),
@@ -31,6 +34,9 @@ namespace MOSAIC.Models.Elastography;
 /// the calibration, with its relaxed..max span mapped linearly onto the slave's range (default 300-700 N/m and
 /// 20-40 Nm/rad; "commands" of the model file, see CommandMap); without them the translational command is
 /// clip(k_volume, 300, 700) and the rotational one 20.
+/// Format 3: kxx..kyz and k_volume are the translational block of K6; the commands map the reduced translational and
+/// rotational blocks of K6 (the operator's stiffness, <see cref="HandModel.Scalars"/>) by the spans of "commands"
+/// (<see cref="CommandMap.Map"/>); without them the reduced values clipped to the slave's range.
 /// A vector without a usable phase (cos = sin = 0) or with K_j not positive definite repeats the last valid
 /// output with valid = 0 (all zeros before the first valid one).
 /// </remarks>
@@ -38,6 +44,7 @@ public sealed class StiffnessProjectionModel
 {
     public const string Format1 = "stiffness_projection/1";
     public const string Format2 = "stiffness_projection/2";
+    public const string Format3 = HandModel.Format;
     public const int OutputLength = 12;
     public const int ValidIndex = 9;
     public static readonly string[] Pairs = { "biceps", "triceps" };
@@ -48,7 +55,7 @@ public sealed class StiffnessProjectionModel
     };
 
     /// <summary>Overall stiffness of the operator, Line = C0 + C1 * mean sigma (N/m or Nm/rad, fitted to the
-    /// calibration trials), and the slave command, Eval: the operator's span [HumanLow, HumanHigh] (Line at the relaxed
+    /// calibration trials; formats 1 and 2, format 3 takes it from the hand model), and the slave command, Eval: the operator's span [HumanLow, HumanHigh] (Line at the relaxed
     /// and the max trials) mapped linearly onto the slave's range [Min, Max] and held at its ends. Without a span
     /// (HumanHigh not above HumanLow), the command is Min.</summary>
     public sealed record CommandMap(double C0, double C1, double Min, double Max, double HumanLow, double HumanHigh)
@@ -91,6 +98,7 @@ public sealed class StiffnessProjectionModel
     private readonly string[] _muscles;
     private readonly double[] _fMax, _l0;
     private readonly ArmModel? _arm;  // null for format 1 (fixed geometry)
+    private static readonly string[] Formats = { Format1, Format2, Format3 };
     private double[,] _j;      // 3 x 4
     private double[,] _jm;     // M x 4
     private double[,,] _h;     // M x 4 x 4
@@ -105,6 +113,8 @@ public sealed class StiffnessProjectionModel
     public JsonNode? FitReport { get; set; }
     public CommandMap? TranslationCommand { get; set; }
     public CommandMap? RotationCommand { get; set; }
+    /// <summary>The hand model of a format-3 file, null for formats 1 and 2.</summary>
+    public HandModel? Hand { get; }
 
     public string Kind => Index.Kind;
     public int MuscleCount => _fMax.Length;
@@ -115,8 +125,8 @@ public sealed class StiffnessProjectionModel
     public StiffnessProjectionModel(JsonElement root)
     {
         Format = root.GetProperty("format").GetString() ?? "";
-        if (Format != Format1 && Format != Format2)
-            throw new InvalidDataException($"model file format is neither {Format1} nor {Format2}");
+        if (!Formats.Contains(Format))
+            throw new InvalidDataException($"model file format is none of {string.Join(", ", Formats)}");
         _gamma = root.GetProperty("gamma").GetDouble();
         _muscles = root.TryGetProperty("muscles", out var mus)
             ? mus.EnumerateArray().Select(m => m.GetString() ?? "").ToArray()
@@ -143,6 +153,18 @@ public sealed class StiffnessProjectionModel
                 SessionElbowDeg = p1.GetProperty("elbow_deg").GetDouble();
             }
         }
+        else if (Format == Format3)
+        {
+            Hand = HandModel.FromJson(root, _gamma);
+            _arm = Hand.Arm;
+            _fMax = (double[])_arm.FMax.Clone();
+            _l0 = (double[])_arm.L0.Clone();
+            SessionUpperArmDeg = Hand.UpperArmDeg;
+            SessionElbowDeg = Hand.ElbowDeg;
+            (_j, _jm, _h) = (new double[3, 4], new double[_fMax.Length, 4], new double[_fMax.Length, 4, 4]);  // unused
+            if (root.TryGetProperty("fit", out var fit3) && fit3.ValueKind == JsonValueKind.Object)
+                FitReport = JsonNode.Parse(fit3.GetRawText());
+        }
         else
         {
             var arm = root.GetProperty("arm");
@@ -160,7 +182,7 @@ public sealed class StiffnessProjectionModel
                 FitReport = JsonNode.Parse(fit.GetRawText());
         }
 
-        Groups = root.GetProperty("groups").EnumerateArray().Select(g =>
+        Groups = Format == Format3 ? Array.Empty<Group>() : root.GetProperty("groups").EnumerateArray().Select(g =>
         {
             var weights = new double[2];
             foreach (var d in g.GetProperty("drivers").EnumerateObject())
@@ -204,7 +226,8 @@ public sealed class StiffnessProjectionModel
             {
                 if (!c.TryGetProperty(name, out var m) || m.ValueKind != JsonValueKind.Object)
                     return null;
-                double c0 = m.GetProperty("c0").GetDouble(), c1 = m.GetProperty("c1").GetDouble();
+                double c0 = m.TryGetProperty("c0", out var a0) ? a0.GetDouble() : 0.0;  // format 3 has no line
+                double c1 = m.TryGetProperty("c1", out var a1) ? a1.GetDouble() : 0.0;
                 return m.TryGetProperty("human_low", out var low)
                     ? new CommandMap(c0, c1, m.GetProperty("min").GetDouble(), m.GetProperty("max").GetDouble(),
                         low.GetDouble(), m.GetProperty("human_high").GetDouble())
@@ -234,12 +257,33 @@ public sealed class StiffnessProjectionModel
         (_j, _jm, _h) = Unpack(arm.Geometry(ArmModel.SessionPosture(sessionUpperArmDeg, sessionElbowDeg)));
     }
 
-    /// <summary>Evaluates the geometry at a measured posture (format 2 only; format 1 keeps its fixed geometry).</summary>
+    /// <summary>New format-3 model (written by the PerturbationCalibration block).</summary>
+    public StiffnessProjectionModel(HandModel hand, IndexDefinition index)
+    {
+        Format = Format3;
+        Hand = hand;
+        _gamma = hand.Gamma;
+        _arm = hand.Arm;
+        _muscles = hand.Arm.Names;
+        _fMax = (double[])hand.Arm.FMax.Clone();
+        _l0 = (double[])hand.Arm.L0.Clone();
+        Groups = Array.Empty<Group>();
+        Index = index;
+        SessionUpperArmDeg = hand.UpperArmDeg;
+        SessionElbowDeg = hand.ElbowDeg;
+        _single = index.SingleIndex is null ? -1 : PairIndex(index.SingleIndex);
+        (_j, _jm, _h) = (new double[3, 4], new double[_fMax.Length, 4], new double[_fMax.Length, 4, 4]);  // unused
+    }
+
+    /// <summary>Evaluates the geometry at a measured posture (formats 2 and 3; format 1 keeps its fixed geometry).</summary>
     public bool SetPosture(Posture posture)
     {
         if (_arm is null)
             return false;
-        (_j, _jm, _h) = Unpack(_arm.Geometry(posture));
+        if (Hand is not null)
+            Hand.SetPosture(posture);
+        else
+            (_j, _jm, _h) = Unpack(_arm.Geometry(posture));
         return true;
     }
 
@@ -252,13 +296,17 @@ public sealed class StiffnessProjectionModel
     public double[] Step(IReadOnlyList<double> features)
     {
         var sigma = Sigmas(features);
+        if (Hand is not null)
+        {
+            var output = sigma is null ? null : HandOutput(sigma);
+            if (output is null)
+                return Held();
+            _last = output;
+            return (double[])_last.Clone();
+        }
         var kc = sigma is null ? null : Stiffness(sigma);
         if (sigma is null || kc is null)
-        {
-            var held = _last is null ? new double[OutputLength] : (double[])_last.Clone();
-            held[ValidIndex] = 0.0;
-            return held;
-        }
+            return Held();
         double det = Det3(kc);
         double volume = det > 0 ? Math.Cbrt(det) : 0.0;
         _last = new[]
@@ -268,6 +316,34 @@ public sealed class StiffnessProjectionModel
             RotationCommand?.Eval(sigma) ?? SlaveRotationRange[0],
         };
         return (double[])_last.Clone();
+    }
+
+    private double[] Held()
+    {
+        var held = _last is null ? new double[OutputLength] : (double[])_last.Clone();
+        held[ValidIndex] = 0.0;
+        return held;
+    }
+
+    /// <summary>Drive of the hand model: mean sigma.</summary>
+    public static double Drive(double[] sigma) => 0.5 * (sigma[0] + sigma[1]);
+
+    /// <summary>Format-3 output for given sigmas, or null if K_j is not positive definite.</summary>
+    private double[]? HandOutput(double[] sigma)
+    {
+        var k6 = Hand!.HandStiffness(Drive(sigma));
+        if (k6 is null)
+            return null;
+        var kt = HandModel.Block(k6, 0);
+        double det = Det3(kt);
+        double kT = HandModel.Reduce(kt, Hand.Reduction), kR = HandModel.Reduce(HandModel.Block(k6, 3), Hand.Reduction);
+        return new[]
+        {
+            kt[0, 0], kt[1, 1], kt[2, 2], kt[0, 1], kt[0, 2], kt[1, 2], det > 0 ? Math.Cbrt(det) : 0.0, sigma[0], sigma[1],
+            1.0,
+            TranslationCommand?.Map(kT) ?? Math.Clamp(kT, SlaveTranslationRange[0], SlaveTranslationRange[1]),
+            RotationCommand?.Map(kR) ?? Math.Clamp(kR, SlaveRotationRange[0], SlaveRotationRange[1]),
+        };
     }
 
     /// <summary>Phase (deg) of each pair (biceps, triceps), null where the pair has no usable phase.</summary>
@@ -316,8 +392,11 @@ public sealed class StiffnessProjectionModel
         return ratio * ratio - 1.0;
     }
 
-    /// <summary>K_c (3 x 3) for given sigmas, or null if K_j is not positive definite.</summary>
-    public double[,]? Stiffness(double[] sigma) => Stiffness(sigma, Groups, _j, _jm, _h);
+    /// <summary>K_c (3 x 3) for given sigmas, or null if K_j is not positive definite (formats 1 and 2; format 3:
+    /// <see cref="Hand"/>).</summary>
+    public double[,]? Stiffness(double[] sigma) => Hand is null
+        ? Stiffness(sigma, Groups, _j, _jm, _h)
+        : throw new InvalidOperationException("a format-3 model computes the hand stiffness with Hand");
 
     /// <summary>K_c for given sigmas, group parameters and geometry (used by the calibration fit).</summary>
     public double[,]? Stiffness(double[] sigma, IReadOnlyList<Group> groups, double[,] j, double[,] jm, double[,,] h)
@@ -417,12 +496,31 @@ public sealed class StiffnessProjectionModel
 
     // --- model file ---
 
-    /// <summary>Model file in format 2 (format-1 models cannot be re-saved: they have no arm lengths).</summary>
+    /// <summary>Model file in format 2 or 3 (format-1 models cannot be re-saved: they have no arm lengths).</summary>
     public JsonObject ToJson()
     {
         if (_arm is null)
             throw new InvalidOperationException("a format-1 model has no arm lengths; refit or re-export it as format 2");
-        JsonObject PerPair(double[] v) => new() { [Pairs[0]] = v[0], [Pairs[1]] = v[1] };
+        if (Hand is not null)
+        {
+            var root = new JsonObject
+            {
+                ["format"] = Format3,
+                ["output"] = new JsonArray(OutputNames.Select(n => (JsonNode)n).ToArray()),
+                ["gamma"] = _gamma,
+                ["muscles"] = new JsonArray(_muscles.Select(n => (JsonNode)n).ToArray()),
+            };
+            foreach (var (key, node) in Hand.ToJson().ToList())
+                root[key] = node?.DeepClone();
+            root["index"] = IndexJson();
+            root["fit"] = FitReport?.DeepClone();
+            root["commands"] = TranslationCommand is null && RotationCommand is null ? null : new JsonObject
+            {
+                ["translation"] = CommandJson(TranslationCommand, "N/m", true),
+                ["rotation"] = CommandJson(RotationCommand, "Nm/rad", true),
+            };
+            return root;
+        }
         var groups = new JsonArray();
         foreach (var g in Groups)
         {
@@ -448,19 +546,7 @@ public sealed class StiffnessProjectionModel
             },
             ["posture"] = new JsonObject { ["upper_arm_deg"] = SessionUpperArmDeg, ["elbow_deg"] = SessionElbowDeg },
             ["groups"] = groups,
-            ["index"] = new JsonObject
-            {
-                ["kind"] = Index.Kind, ["drive_hz"] = Index.DriveHz, ["spacing_m"] = Index.SpacingM,
-                ["lag_offset_deg"] = Index.LagOffsetDeg, ["single_index"] = Index.SingleIndex,
-                ["scale"] = PerPair(Index.Scale), ["relaxed_phase_deg"] = PerPair(Index.RelaxedPhaseDeg),
-                ["direction"] = PerPair(Index.Direction), ["window_high_deg"] = PerPair(Index.WindowHighDeg),
-                ["sigma_max"] = Index.SigmaMax,
-                ["features"] = new JsonObject
-                {
-                    [Pairs[0]] = new JsonArray(Index.Features[0][0], Index.Features[0][1]),
-                    [Pairs[1]] = new JsonArray(Index.Features[1][0], Index.Features[1][1]),
-                },
-            },
+            ["index"] = IndexJson(),
             ["fit"] = FitReport?.DeepClone(),
             ["commands"] = TranslationCommand is null && RotationCommand is null ? null : new JsonObject
             {
@@ -470,13 +556,38 @@ public sealed class StiffnessProjectionModel
         };
     }
 
-    private static JsonObject? CommandJson(CommandMap? c, string unit) => c is null ? null : new JsonObject
+    private JsonObject IndexJson()
     {
-        ["c0"] = c.C0, ["c1"] = c.C1, ["human_low"] = c.HumanLow, ["human_high"] = c.HumanHigh, ["min"] = c.Min,
-        ["max"] = c.Max, ["unit"] = unit,
-        ["input"] = "operator: c0 + c1 * mean of sigma_biceps and sigma_triceps; slave command: human_low..human_high "
-                    + "mapped linearly onto min..max",
-    };
+        JsonObject PerPair(double[] v) => new() { [Pairs[0]] = v[0], [Pairs[1]] = v[1] };
+        return new JsonObject
+        {
+            ["kind"] = Index.Kind, ["drive_hz"] = Index.DriveHz, ["spacing_m"] = Index.SpacingM,
+            ["lag_offset_deg"] = Index.LagOffsetDeg, ["single_index"] = Index.SingleIndex,
+            ["scale"] = PerPair(Index.Scale), ["relaxed_phase_deg"] = PerPair(Index.RelaxedPhaseDeg),
+            ["direction"] = PerPair(Index.Direction), ["window_high_deg"] = PerPair(Index.WindowHighDeg),
+            ["sigma_max"] = Index.SigmaMax,
+            ["features"] = new JsonObject
+            {
+                [Pairs[0]] = new JsonArray(Index.Features[0][0], Index.Features[0][1]),
+                [Pairs[1]] = new JsonArray(Index.Features[1][0], Index.Features[1][1]),
+            },
+        };
+    }
+
+    private static JsonObject? CommandJson(CommandMap? c, string unit, bool hand = false) => c is null ? null : hand
+        ? new JsonObject
+        {
+            ["human_low"] = c.HumanLow, ["human_high"] = c.HumanHigh, ["min"] = c.Min, ["max"] = c.Max, ["unit"] = unit,
+            ["input"] = "operator: reduced block of the projected 6x6 hand stiffness; slave command: "
+                        + "human_low..human_high mapped linearly onto min..max",
+        }
+        : new JsonObject
+        {
+            ["c0"] = c.C0, ["c1"] = c.C1, ["human_low"] = c.HumanLow, ["human_high"] = c.HumanHigh, ["min"] = c.Min,
+            ["max"] = c.Max, ["unit"] = unit,
+            ["input"] = "operator: c0 + c1 * mean of sigma_biceps and sigma_triceps; slave command: human_low..human_high "
+                        + "mapped linearly onto min..max",
+        };
 
     /// <summary>Writes the model file; an existing file is kept as &lt;path&gt;.bak.</summary>
     public void Save(string path)

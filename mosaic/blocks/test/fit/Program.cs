@@ -4,10 +4,12 @@ using System.Linq;
 using System.Text.Json;
 using MOSAIC.Models.Elastography;
 
-// dotnet run -- <reference.json from make_fit_reference.py>
+// dotnet run -- <reference.json from make_fit_reference.py> [-v]
 // Fits the same synthetic trials as StiffnessModel.fit and compares parameters and cost; checks the identification,
 // and the trial identification of PerturbationCalibrationCore (Stimulus states + robot state stream of a hand with a
-// known stiffness) with the force from the robot spring and from the FR3 wrench.
+// known stiffness) with the force from the robot spring and from the FR3 wrench. Hand model: StiffnessFit.FitHand on
+// the synthetic trials of HandModel.fit (parameters to 1e-3 in log units), and PerturbationCalibrationCore.Replay of
+// each logged session against the fit of refit_calibration.py on the same trials (-v prints the calibration log).
 // The two optimisers (scipy trust-region reflective, LM here) stop at slightly different points of a flat minimum,
 // so the cost must agree to 1e-4 relative and the parameters to 0.01 (absolute, parameters in [0, 1]).
 var root = JsonDocument.Parse(File.ReadAllText(args[0])).RootElement;
@@ -82,7 +84,54 @@ foreach (var mode in new[] { "robot", "wrench" })
     Console.WriteLine($"calibration core, force {mode}: {core.Trials[0].Cycles.Count} cycles, K diag {kId[0, 0]:F1} "
                       + $"{kId[1, 1]:F1} {kId[2, 2]:F1} N/m (true 600 150 450), relative error {e2:E1} {(pass ? "PASS" : "FAIL")}");
 }
+foreach (var c in root.GetProperty("hand").EnumerateArray())
+{
+    var hand = new HandModel(arm, 90, 90, null, c.GetProperty("reduction").GetString()!, Vec(c.GetProperty("offset")));
+    var trials = c.GetProperty("trials").EnumerateArray().Select(t => new HandTrial(t.GetProperty("d").GetDouble(),
+        Mat(t.GetProperty("Kt")), t.GetProperty("Kr").ValueKind == JsonValueKind.Array ? Mat(t.GetProperty("Kr")) : null))
+        .ToList();
+    var res = StiffnessFit.FitHand(hand, trials);
+    var pPy = Vec(c.GetProperty("params"));
+    double costPy = c.GetProperty("cost").GetDouble();
+    double dp = res.Parameters.Zip(pPy, (p, q) => Math.Abs(Math.Log(p / q))).Max();
+    bool pass = dp < 1e-3 && (res.Cost <= costPy || Math.Abs(res.Cost - costPy) / costPy < 1e-4);
+    ok &= pass;
+    Console.WriteLine($"hand fit {c.GetProperty("name").GetString()}: {res.Iterations} iterations, cost {res.Cost:E4} "
+                      + $"(python {costPy:E4}), largest parameter difference {dp:E1} (log) {(pass ? "PASS" : "FAIL")}");
+    Console.WriteLine("  C#     " + string.Join(" ", res.Parameters.Select(v => v.ToString("G5"))));
+    Console.WriteLine("  python " + string.Join(" ", pPy.Select(v => v.ToString("G5"))));
+}
+bool verbose = args.Contains("-v");
+int replayIndex = 0;
+foreach (var r in root.GetProperty("replays").EnumerateArray())
+{
+    var path = WindowsPath(r.GetProperty("path").GetString()!);
+    var dir = Path.Combine(Path.GetTempPath(), $"fitcheck_replay_{replayIndex++}");
+    if (Directory.Exists(dir))
+        Directory.Delete(dir, true);
+    Directory.CreateDirectory(dir);
+    var log = new System.Collections.Generic.List<string>();
+    var core = new PerturbationCalibrationCore(new PerturbationCalibrationCore.Options
+    {
+        ModelPath = Path.Combine(dir, "stiffness_projection.json"), LogDir = dir,
+    }) { Log = log.Add };
+    var fitted = core.Replay(JsonDocument.Parse(File.ReadAllText(path)).RootElement);
+    var pPy = Vec(r.GetProperty("params"));
+    double dp = fitted?.Hand is { } h ? h.P.Zip(pPy, (p, q) => Math.Abs(Math.Log(p / q))).Max() : double.PositiveInfinity;
+    bool pass = dp < 1e-3 && new StiffnessProjectionModel(Path.Combine(dir, "stiffness_projection.json")).Hand is not null;
+    ok &= pass;
+    Console.WriteLine($"replay {Path.GetFileName(path)}: parameters C# "
+                      + string.Join(" ", fitted?.Hand?.P.Select(v => v.ToString("G4")) ?? Array.Empty<string>())
+                      + $", python {string.Join(" ", pPy.Select(v => v.ToString("G4")))}, largest difference {dp:E1} (log) "
+                      + (pass ? "PASS" : "FAIL"));
+    foreach (var line in log.Where(l => verbose || l.StartsWith("VERDICT") || l.StartsWith("VALIDATION")))
+        Console.WriteLine("    " + line);
+}
 return ok ? 0 : 1;
+
+// /mnt/c/... (WSL) -> C:\... for the Windows SDK
+static string WindowsPath(string p) => p.StartsWith("/mnt/") && p.Length > 6
+    ? $"{char.ToUpperInvariant(p[5])}:{p[6..].Replace('/', '\\')}" : p;
 
 static double[] Vec(JsonElement e) => e.EnumerateArray().Select(v => v.GetDouble()).ToArray();
 

@@ -5,7 +5,7 @@ using System.Text.Json;
 using MOSAIC.Models.Elastography;
 
 // dotnet run -- <reference.json from make_arm_reference.py>
-// Compares muscle lengths, J, J_m and H of ArmModel with the Python arm model; session cases also go through
+// Compares muscle lengths, J, J_m, H and the hand Jacobian J6 of ArmModel with the Python arm model; session cases also go through
 // ArmModel.SessionPosture, and every case through FromQuaternions (posture -> quaternions -> posture). Exit 1 on a miss.
 const double TolLength = 1e-9, TolJ = 1e-6, TolH = 1e-4;
 var root = JsonDocument.Parse(File.ReadAllText(args[0])).RootElement;
@@ -31,9 +31,10 @@ foreach (var c in root.GetProperty("cases").EnumerateArray())
         double eJ = MaxErr(geo.J, Mat(c.GetProperty("J")));
         double eJm = MaxErr(geo.Jm, Mat(c.GetProperty("Jm")));
         double eH = MaxErr(geo.H, c.GetProperty("H"));
-        bool pass = eL <= TolLength && eJ <= TolJ && eJm <= TolJ && eH <= TolH;
+        double eJ6 = MaxErr(arm.HandJacobian(p), Mat(c.GetProperty("J6")));
+        bool pass = eL <= TolLength && eJ <= TolJ && eJm <= TolJ && eH <= TolH && eJ6 <= TolJ;
         ok &= pass;
-        Console.WriteLine($"case {index} ({label}): lengths {eL:E1} m, J {eJ:E1}, J_m {eJm:E1}, H {eH:E1} "
+        Console.WriteLine($"case {index} ({label}): lengths {eL:E1} m, J {eJ:E1}, J_m {eJm:E1}, H {eH:E1}, J6 {eJ6:E1} "
                           + (pass ? "PASS" : "FAIL"));
     }
     index++;

@@ -27,13 +27,14 @@ namespace MOSAIC.Models.Elastography;
 /// Inputs:
 ///   features: Vector of the esp32_robot_stiffness output (12 doubles).
 ///   IMU: Vector of 8 values, unit quaternions (w, x, y, z) of the upper-arm and the forearm frame in the robot base
-///     frame (sensor-to-segment alignment done upstream). Sets the posture (model format 2 only); without it the
+///     frame (sensor-to-segment alignment done upstream). Sets the posture (model formats 2 and 3); without it the
 ///     session posture of the model file is used.
 ///   Session: Trigger block with the actions "relaxed:0" and "tense:1". Start capture records the phases, stop
 ///     capture averages them: "relaxed" sets the relaxed reference of each pair, "tense" sets the direction of each
-///     index (the sign of the phase change on contraction). The model file is saved after each (format 2).
-/// Output: Vector [kxx, kyy, kzz, kxy, kxz, kyz, k_volume, sigma_biceps, sigma_triceps, valid], stiffness in N/m in
-/// the robot base frame.
+///     index (the sign of the phase change on contraction). The model file is saved after each (formats 2 and 3).
+/// Output: Vector [kxx, kyy, kzz, kxy, kxz, kyz, k_volume, sigma_biceps, sigma_triceps, valid, k_translation_cmd,
+/// k_rotation_cmd], stiffness in N/m in the robot base frame (format 3: translational block of the 6x6 hand stiffness;
+/// both commands from the projection), see <see cref="StiffnessProjectionModel"/>.
 /// </example>
 public sealed class StiffnessProjection : BaseBlock
 {
@@ -132,7 +133,7 @@ public sealed class StiffnessProjection : BaseBlock
         var counts = _capture.Counts;
         string msg = code < 0.5 ? _model.SetRelaxed(mean) : _model.SetDirectionFromTense(mean);
         Report($"{(code < 0.5 ? "relaxed" : "tense")} capture ({counts[0]}/{counts[1]} packets): {msg}");
-        if (_model.Format == StiffnessProjectionModel.Format2)
+        if (_model.Format != StiffnessProjectionModel.Format1)
         {
             try
             {

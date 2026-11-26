@@ -24,10 +24,10 @@ slave), which must never run at the same time.
 | LoadCell | UDPClient | yes | K6D80 + GSV-8DS force/torque, port 50800 (placeholder until its connection is known) |
 | Effort | Trigger | yes | operator state of the trial: empty (-1), relaxed (0), medium (0.5), max (1). Start capture starts the trial on the robot; the fit runs by itself after the first max trial, later trials validate the model |
 | Robot | UDPClient | yes | sends the Effort code to the perturbation program (port 50900), receives its state (port 50910) |
-| Calibration | PerturbationCalibration | custom | per step: dx, dF; per trial: identified K (the trial ends when the robot's trial ends); fit after the first max trial: quality check (GOOD / WEAK / REDO), relaxed reference, direction, scale and index window per pair, model parameters, writes the model file; validation trials after it: predicted vs measured K, validation verdict (PASS / FAIL / REPEAT VALIDATION) |
+| Calibration | PerturbationCalibration | custom | per step: dx, dF; per trial: identified K (the trial ends when the robot's trial ends); fit after the first max trial: quality check (GOOD / WEAK / REDO), relaxed reference, direction, scale and index window per pair, model parameters, writes the model file; validation trials after it: predicted vs measured K, validation verdict (PASS / FAIL / REPEAT VALIDATION). Param `handle_offset:0;0;-0.12`: middle of the grip 12 cm below the robot flange (estimate; replace with the measured length) |
 | Session | Trigger | yes | run: relaxed (0) and tense (1) captures set the reference and direction of this mounting |
 | Stiffness | StiffnessProjection | custom | features + posture (IMU, else session posture) -> 3x3 hand stiffness |
-| Commands | Projector | yes | selects the two commands (elements 10, 11): the operator's overall stiffness with its relaxed..max span mapped linearly onto the slave's range, 300-700 N/m and 20-40 Nm/rad (slave gain 40-80, of which half acts), as the Virtuose trigger's 0..1 is mapped onto 300-700 N/m |
+| Commands | Projector | yes | selects the two commands (elements 10, 11): the operator's translational and rotational stiffness from the hand model (6x6 hand stiffness at the handle, each 3x3 block reduced to one number) with its relaxed..max span mapped linearly onto the slave's range, 300-700 N/m and 20-40 Nm/rad (slave gain 40-80, of which half acts), as the Virtuose trigger's 0..1 is mapped onto 300-700 N/m |
 | ToSlave | UDPClient | yes | the two stiffness commands to the slave, port 4500 |
 | ToMonitor | UDPClient | yes | full output to port 50510 (watch_stiffness.py) |
 
@@ -100,14 +100,18 @@ The board is on USB; the emergency stop is within reach. Three terminals; in ter
      validation) or `REDO` (with the clip and what to do; the model file is still written, do not use it: reopen
      `session_calibration.json` and repeat the calibration). Backtest on the sessions of 11-17 to 11-25: GOOD only for
      the two sessions whose model worked (11-19 17:26 and 11-23 14:05 UTC).
-   Then the relaxed reference, the direction of each pair, the index scale and window, the fitted parameters and
-   `model written to ...`, and the two command maps (`translation command = c0 + c1 * mean sigma`,
-   `rotation command = ...`).
-   Then validation trials, as above: relaxed, medium, max. Terminal 3 prints `validation trial n (...)`: both
-   overall stiffnesses predicted from the trial's phases vs measured (the prediction before the slave's range; the
-   capped command is named when the range cuts it), and the 3x3 model vs measured (session file, `validation`).
+   Then the relaxed reference, the direction of each pair, the index scale and window, the hand model fit
+   (`fit: a0 ..., b ..., s_w ..., c_r ...`, then per trial the measured vs modelled translational and rotational
+   stiffness as the robot measures them), `model written to ...`, and the two commands (`translation command:
+   operator ... N/m (projection at drive ...) mapped onto 300-700 N/m; rotation command: ...`). The drive is the mean
+   of the two pair indices; the model is the hand model of `projection/hand_model.py` (model file format 3, option
+   `model:groups` gives the older group model with straight command lines).
+   Then validation trials, as above: relaxed, medium, max. Terminal 3 prints `validation trial n (...)`: the drive,
+   the translational and rotational stiffness measured vs what the model says the robot would measure, the two slave
+   commands from the phases and from the robot's measurement, and the 3x3 model vs measured (session file,
+   `validation`).
    Once a relaxed and a max validation trial exist, `VALIDATION CHECK: ...` (slave command predicted from the phases
-   vs mapped from the robot's measurement) and `VALIDATION: PASS` (open `session_run.json`), `FAIL` (repeat the
+   vs mapped from the robot's measurement; rotation listed too, not part of the verdict) and `VALIDATION: PASS` (open `session_run.json`), `FAIL` (repeat the
    calibration) or `REPEAT VALIDATION` (the robot measured no stiffening at max: repeat the validation trials).
    PASS needs: robot max at least 1.5x relaxed, predicted max at least half the slave range above relaxed, and both
    predictions within a quarter of the range of the measured ones. Both results are in the session file (`check`,

@@ -9,6 +9,8 @@
   <ItemGroup>
     <Compile Include="../StiffnessProjectionModel.cs" />
     <Compile Include="../ArmModel.cs" />
+    <Compile Include="../HandModel.cs" />
+    <Compile Include="../StiffnessFit.cs" />
     <Compile Remove="replay/**" />
     <Compile Remove="arm/**" />
     <Compile Remove="fit/**" />
