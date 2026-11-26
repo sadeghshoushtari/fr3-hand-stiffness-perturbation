@@ -214,7 +214,8 @@ trial from the steps in the robot state, fits the model and writes `stiffness_pr
 `projection/hand_model.py`: one drive from both pairs, 6x6 hand stiffness, both slave commands from it; the block
 evaluates the arm geometry itself, so the posture can come from IMUs; `projection/refit_calibration.py` refits logged
 sessions with it); in the run pipeline a Session trigger sets the relaxed reference and the index
-direction of each mounting. Step-by-step use: `mosaic/SESSION_PIPELINES.md`.
+direction of each mounting. Step-by-step use: `mosaic/SESSION_PIPELINES.md`; on the robot PC `run/calibration.sh` and `run/teleop.sh` check the
+setup, start every program in one tmux session and stop them safely (`run/stop.sh`).
 
 ## Status
 

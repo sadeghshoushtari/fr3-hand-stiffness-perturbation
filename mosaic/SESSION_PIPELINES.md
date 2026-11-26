@@ -60,6 +60,29 @@ Everything sits in the thesis folder `~/Mohammadsadegh_Shoushtaridehshal_Master_
 use these paths. Build the robot program once (and after it changes), in the repository folder:
 `g++ -std=c++17 -O2 -Wall -Wextra perturbation.cpp -I/usr/include/eigen3 -o perturbation -lfranka -pthread`.
 
+## Launcher (robot PC)
+
+`run/calibration.sh` and `run/teleop.sh` (from any folder; `run/teleop.sh --logger <label>` also starts
+`teleop_logger.py` with sudo) do the steps below from one terminal:
+
+1. Checks, each printed as ok / warn / FAIL; any FAIL stops the start. Both repositories on their GitHub branch
+   without local edits (offers `git reset --hard`), `perturbation` / `slave_ti` / `master_ti` built from the current
+   sources and MOSAIC built with every block of `mosaic/blocks/` (links and builds them as the VS Code task does), robot
+   reachable, board port present and free, UDP ports free, no program of an earlier session still running;
+   teleoperation also the model file (format, date) and the verdicts of the last calibration.
+2. One tmux session `thesis` with a pane per program (click a pane to type in it), every pane logged to
+   `<thesis>/sessions/<date_time>_<kind>/`, which also gets the git commits (`session.md`), the robot and sensor logs,
+   the model file before and after, and the MOSAIC logs written during the session.
+3. The control pane (top left) lists the steps of the session. `q` + Enter there ends it: robot programs stopped
+   (Ctrl+C; a program still waiting for the Enter before its home move is ended with TERM, never with an Enter),
+   vibrator off (also sent to the board directly), MOSAIC closed, `summary.txt` with the calibration verdicts printed.
+   The same shutdown runs on Ctrl+C in the control pane, when the tmux session is closed, and with `run/stop.sh` from
+   any terminal. `v` + Enter switches the vibrator off at once.
+
+Still by hand: Desk (unlock, FCI), the emergency stop, the Enter before each home move, MOSAIC's File -> Open and its
+cards. `--dry-run` runs the checks only; `--test` runs the panes and the shutdown with stand-in programs on a PC without
+robot and board. Without tmux, or if a check cannot be fixed, the steps below still work by hand.
+
 ## Calibration session, step by step
 
 Before the session, on the laptop: the bench signal check and the guided test (`signal_check.py`, `guided_test.py`)
